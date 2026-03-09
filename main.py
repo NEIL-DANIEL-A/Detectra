@@ -30,6 +30,11 @@ class DetectraApp:
         self.rect_start_y = None
         self.rect_id = None
         self.resize_timer = None
+        self.stop_event = None
+        self.is_paused = False
+        self.current_frame_idx = 0
+        self.last_shown_frame_rgb = None
+        self.last_results = None
 
         self.apply_theme()
         self.setup_ui()
@@ -72,6 +77,17 @@ class DetectraApp:
                        background=[('active', "#B4BEFE"), ('disabled', '#181825')],
                        foreground=[('disabled', '#585B70')])
 
+        # Stop Button
+        self.style.configure("Stop.TButton",
+                             padding=(15, 8),
+                             relief="flat",
+                             background="#F38BA8",  # Catppuccin Red
+                             foreground="#11111B",
+                             font=('Segoe UI', 11, 'bold'))
+        self.style.map("Stop.TButton",
+                       background=[('active', "#EBA0AC"), ('disabled', '#181825')],
+                       foreground=[('disabled', '#585B70')])
+
         # Progress bar
         self.style.configure("Horizontal.TProgressbar", 
                              background="#A6E3A1", 
@@ -98,7 +114,11 @@ class DetectraApp:
         self.status_lbl.pack(side=tk.LEFT, padx=10)
         
         self.start_btn = ttk.Button(self.control_frame, text="Start Tracking", command=self.start_tracking, state=tk.DISABLED, style="Accent.TButton")
-        self.start_btn.pack(side=tk.RIGHT)
+        self.start_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+        self.stop_btn = ttk.Button(self.control_frame, text="Stop Tracking", command=self.true_stop_tracking, style="Stop.TButton")
+        self.stop_btn.pack(side=tk.RIGHT)
+        self.stop_btn.pack_forget()  # hidden until tracking starts
 
         # Center Frame for Canvas
         self.canvas_frame = ttk.Frame(self.root, padding=15)
@@ -124,11 +144,29 @@ class DetectraApp:
         self.options_frame.pack(fill=tk.X)
         
         self.show_tracking_var = tk.BooleanVar(value=True)
-        self.show_tracking_chk = ttk.Checkbutton(self.options_frame, text="Show Tracking Feed (Slower)", variable=self.show_tracking_var)
+        self.show_tracking_chk = ttk.Checkbutton(self.options_frame, text="Show Tracking Feed", variable=self.show_tracking_var)
         self.show_tracking_chk.pack(side=tk.LEFT)
+
+        # Speed / frame-skip control
+        ttk.Label(self.options_frame, text="Speed:", font=('Segoe UI', 11)).pack(side=tk.LEFT, padx=(20, 4))
+        self.speed_var = tk.IntVar(value=2)
+        self.speed_slider = ttk.Scale(self.options_frame, from_=1, to=10,
+                                      orient=tk.HORIZONTAL, variable=self.speed_var,
+                                      length=140, command=self._on_speed_change)
+        self.speed_slider.pack(side=tk.LEFT)
+        self.speed_lbl = ttk.Label(self.options_frame, text="2x", font=('Segoe UI', 11, 'bold'), width=4)
+        self.speed_lbl.pack(side=tk.LEFT, padx=(4, 0))
+        
+        self.results_btn = ttk.Button(self.options_frame, text="Show Last Results", command=self.view_last_results)
+        self.results_btn.pack(side=tk.RIGHT)
+        self.results_btn.pack_forget()
         
         self.info_lbl = ttk.Label(self.bottom_frame, text="", font=("Segoe UI", 12, "bold"))
         self.info_lbl.pack(pady=(10, 0))
+
+    def _on_speed_change(self, _=None):
+        v = int(self.speed_var.get())
+        self.speed_lbl.config(text=f"{v}x")
 
     def on_resize(self, event):
         if self.resize_timer is not None:
@@ -169,6 +207,7 @@ class DetectraApp:
             return
             
         self.first_frame_rgb = frame
+        self.last_shown_frame_rgb = frame
         self.status_lbl.config(text="Detecting objects...")
         self.root.update()
         
@@ -181,11 +220,15 @@ class DetectraApp:
 
     def draw_frame(self, frame_rgb=None, bbox=None):
         if frame_rgb is not None:
+            self.last_shown_frame_rgb = frame_rgb
             img_to_draw = frame_rgb
+        elif self.last_shown_frame_rgb is not None:
+            img_to_draw = self.last_shown_frame_rgb
         else:
             if self.first_frame_rgb is None:
                 return
             img_to_draw = self.first_frame_rgb
+            self.last_shown_frame_rgb = self.first_frame_rgb
 
         self.canvas.delete("all")
         self.rect_id = None
@@ -227,7 +270,7 @@ class DetectraApp:
             self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline="red", width=2)
 
     def on_press(self, event):
-        if self.first_frame_rgb is None:
+        if self.last_shown_frame_rgb is None:
             return
         
         # Save start coordinates relative to canvas
@@ -243,14 +286,14 @@ class DetectraApp:
         )
 
     def on_drag(self, event):
-        if self.first_frame_rgb is None or self.rect_id is None:
+        if self.last_shown_frame_rgb is None or self.rect_id is None:
             return
         
         # Update rectangle size
         self.canvas.coords(self.rect_id, self.rect_start_x, self.rect_start_y, event.x, event.y)
 
     def on_release(self, event):
-        if self.first_frame_rgb is None or self.rect_id is None:
+        if self.last_shown_frame_rgb is None or self.rect_id is None:
             return
 
         end_x = event.x
@@ -263,8 +306,8 @@ class DetectraApp:
         iy2 = (max(self.rect_start_y, end_y) - self.y_offset) / self.scale_factor
         
         # Ensure box is within bounds and has some size
-        img_width = self.first_frame_rgb.shape[1]
-        img_height = self.first_frame_rgb.shape[0]
+        img_width = self.last_shown_frame_rgb.shape[1]
+        img_height = self.last_shown_frame_rgb.shape[0]
         
         ix1 = max(0, min(ix1, img_width))
         iy1 = max(0, min(iy1, img_height))
@@ -294,47 +337,117 @@ class DetectraApp:
     def start_tracking(self):
         if not self.video_path or not self.selected_bbox:
             return
+
+        # If already running, acting as PAUSE
+        if self.stop_event and not self.stop_event.is_set():
+            self.stop_tracking()
+            return
             
-        self.start_btn.config(state=tk.DISABLED)
+        self.start_btn.config(text="Pause Tracking")
         self.upload_btn.config(state=tk.DISABLED)
         self.show_tracking_chk.config(state=tk.DISABLED)
-        self.status_lbl.config(text="Processing video... Please wait.")
-        self.progress_var.set(0)
-        self.info_lbl.config(text="")
+        self.speed_slider.config(state=tk.DISABLED)
+        self.results_btn.pack_forget() # hide previous results if any
+        self.stop_btn.pack(side=tk.RIGHT)   # show Stop button
+        speed = int(self.speed_var.get())
         
+        if self.is_paused:
+            self.status_lbl.config(text=f"Resuming at {speed}x speed...")
+        else:
+            self.status_lbl.config(text=f"Processing video at {speed}x speed... Please wait.")
+            self.current_frame_idx = 0
+            
+        self.progress_var.set((self.current_frame_idx / float(self.total_frames_est if hasattr(self, 'total_frames_est') and self.total_frames_est else 100)) * 100)
+        self.info_lbl.config(text="")
+
+        self.stop_event = threading.Event()
+
         # Run processing in a separate thread so GUI doesn't freeze
-        thread = threading.Thread(target=self.run_tracker_thread)
+        thread = threading.Thread(target=self.run_tracker_thread, daemon=True)
         thread.start()
         
+    def stop_tracking(self):
+        if self.stop_event is not None:
+            self.stop_event.set()
+        # Note: we don't clear state here, we let on_tracking_complete handle it
+        # However, for the TRUE STOP (reset), we might want a different path.
+        # But per user request, "Stop Tracking" is separate from pause.
+        # Wait, the user said "make the start button turned into a pause button".
+        # And "stop and i shld be able to draw the tracking box again".
+        # The existing RED "Stop Tracking" button should probably reset EVERYTHING.
+
+    def true_stop_tracking(self):
+        if self.stop_event:
+            self.stop_event.set()
+        self.is_paused = False
+        self.current_frame_idx = 0
+        self.selected_bbox = None
+        self.last_results = None
+        self.start_btn.config(text="Start Tracking")
+        self.stop_btn.pack_forget()
+        self.results_btn.pack_forget()
+        self.status_lbl.config(text="Tracking reset.")
+        self.info_lbl.config(text="")
+        if self.first_frame_rgb is not None:
+            self.draw_frame(self.first_frame_rgb)
+
     def run_tracker_thread(self):
-        # Callback for progress
         def progress_cb(current, total):
+            self.total_frames_est = total # store for progress bar
             self.root.after(0, self.update_progress, current, total)
-            
+
         def frame_cb(frame_rgb, bbox):
             self.root.after(0, self.live_view_callback, frame_rgb, bbox)
-            
+
         callback_to_pass = frame_cb if self.show_tracking_var.get() else None
-            
-        results = self.tracker.process_video(self.video_path, self.selected_bbox, progress_cb, callback_to_pass)
-        
-        # Notify main thread when done
+
+        frame_skip = int(self.speed_var.get())
+        results = self.tracker.process_video(
+            self.video_path, self.selected_bbox,
+            progress_cb, callback_to_pass,
+            stop_event=self.stop_event,
+            frame_skip=frame_skip,
+            start_frame=self.current_frame_idx
+        )
+
         self.root.after(0, self.on_tracking_complete, results)
+
+    def view_last_results(self):
+        if self.last_results:
+            self.show_results_window(self.last_results)
 
     def on_tracking_complete(self, results):
         self.start_btn.config(state=tk.NORMAL)
         self.upload_btn.config(state=tk.NORMAL)
         self.show_tracking_chk.config(state=tk.NORMAL)
-        self.progress_var.set(100)
+        self.speed_slider.config(state=tk.NORMAL)
         
+        self.current_frame_idx = results.get('last_frame_idx', self.current_frame_idx)
+
+        if results.get('stopped'):
+            self.is_paused = True
+            self.start_btn.config(text="Resume Tracking")
+            self.status_lbl.config(text=f"Tracking paused at frame {self.current_frame_idx}.")
+            self.info_lbl.config(text="You can re-draw the box now if needed.", foreground="#89B4FA")
+            return
+
+        self.is_paused = False
+        self.current_frame_idx = 0
+        self.start_btn.config(text="Start Tracking")
+        self.stop_btn.pack_forget()  # hide Stop button
+        self.progress_var.set(100)
+
         if "error" in results:
             messagebox.showerror("Error", results["error"])
             self.status_lbl.config(text="Tracking failed.")
             return
             
         if results.get("disappeared"):
+            self.last_results = results
+            self.results_btn.pack(side=tk.RIGHT)
             self.status_lbl.config(text="Disappearance detected!")
-            self.info_lbl.config(text=f"Object disappeared at: {results['timestamp']}\nSnapshots saved to 'results' folder.", foreground="red")
+            timestamp_text = results.get('timestamp_ocr', results['timestamp'])
+            self.info_lbl.config(text=f"Object disappeared at: {timestamp_text}\nSnapshots saved to RESULTS folder.", foreground="red")
             self.show_results_window(results)
         else:
             self.status_lbl.config(text="Tracking finished. Object never disappeared.")

@@ -1,303 +1,292 @@
 import cv2
 import os
-import shutil
 from datetime import timedelta
 from ultralytics import YOLO
 
+
 class Tracker:
     def __init__(self, model_path='yolov8n.pt'):
-        # Initialize YOLO model
-        # Using yolov8n.pt (nano) for speed. 
         self.model = YOLO(model_path)
-    
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
     def extract_first_frame(self, video_path):
-        """
-        Reads the video file and returns the first valid frame.
-        """
+        """Returns the first frame as RGB, or (None, error_str)."""
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return None, "Error: Could not open video file."
-        
         ret, frame = cap.read()
         cap.release()
-        
         if not ret:
             return None, "Error: Could not read first frame."
-        
-        # Convert BGR (OpenCV) to RGB for UI
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame_rgb, None
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), None
 
-    def detect_objects(self, frame_rgb):
-        """
-        Runs YOLO detection on a single frame. 
-        Returns a list of dicts: {'bbox': (x1,y1,x2,y2), 'confidence': conf, 'class': cls_id}
-        """
-        # YOLO accepts BGR or RGB, but we must be consistent. Since we already loaded RGB:
-        results = self.model(frame_rgb, verbose=False)
+    def detect_objects(self, frame):
+        """Plain YOLO detection (no tracking state). Returns list of dicts."""
+        results = self.model(frame, verbose=False)
         detections = []
-        
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                # bounding box
+        for r in results:
+            for box in r.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                conf = box.conf[0].item()
                 cls_id = int(box.cls[0].item())
-                
                 detections.append({
                     'bbox': (int(x1), int(y1), int(x2), int(y2)),
-                    'confidence': conf,
+                    'confidence': box.conf[0].item(),
                     'class': cls_id,
-                    'class_name': result.names[cls_id]
+                    'class_name': r.names[cls_id],
                 })
         return detections
 
     def calculate_iou(self, boxA, boxB):
-        # Determine the (x, y)-coordinates of the intersection rectangle
-        xA = max(boxA[0], boxB[0])
-        yA = max(boxA[1], boxB[1])
-        xB = min(boxA[2], boxB[2])
-        yB = min(boxA[3], boxB[3])
+        xA = max(boxA[0], boxB[0]); yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2]); yB = min(boxA[3], boxB[3])
+        inter = max(0, xB - xA + 1) * max(0, yB - yA + 1)
+        aA = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
+        aB = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
+        return inter / float(aA + aB - inter)
 
-        # Compute the area of intersection rectangle
-        interArea = max(0, xB - xA + 1) * max(0, yB - yA + 1)
+    # ── Main tracking ─────────────────────────────────────────────────────
 
-        # Compute the area of both the prediction and ground-truth rectangles
-        boxAArea = (boxA[2] - boxA[0] + 1) * (boxA[3] - boxA[1] + 1)
-        boxBArea = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
-
-        # Compute the intersection over union by taking the intersection
-        # area and dividing it by the sum of prediction + ground-truth
-        # areas - the intersection area
-        iou = interArea / float(boxAArea + boxBArea - interArea)
-
-        return iou
-
-    def process_video(self, video_path, target_bbox, progress_callback=None, frame_callback=None):
+    def process_video(self, video_path, target_bbox,
+                      progress_callback=None, frame_callback=None,
+                      stop_event=None, frame_skip=3, start_frame=0):
         """
-        Processes the video frame by frame. Tracks the target_bbox using OpenCV KCF tracker (fastest).
-        Flags disappearance if the object is missing (tracker failure) or leaves the frame boundaries.
-        
-        target_bbox is (x1, y1, x2, y2)
-        progress_callback is a function(current_frame, total_frames) to update the GUI
-        frame_callback is a function(frame_rgb, bbox) to update the GUI canvas with tracking view
-        
-        Returns:
-            dict with:
-                'disappeared': bool
-                'timestamp': str (HH:MM:SS)
-                'frame_before_path': str
-                'frame_after_path': str
+        Tracks target_bbox across the video using YOLO ByteTrack + frame skipping.
+
+        frame_skip  : Run YOLO only every N frames. Skipped frames reuse the
+                      last known / linearly-extrapolated bbox — making processing
+                      ~N× faster while keeping accuracy high for slow/normal
+                      moving objects (default = 3).
+
+        MISS_PATIENCE : Number of *processed* (YOLO-checked) frames with no
+                        detection before declaring disappearance.
+        EDGE_PATIENCE : Processed frames where bbox is only at edge before exit.
         """
+
+        MISS_PATIENCE = 30    # processed frames (actual YOLO calls, not raw frames)
+        EDGE_PATIENCE = 5
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return {"error": "Could not open video."}
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps          = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        # Determine scale down factor for speed. Max dimension 640.
-        max_dim = 640
-        scale = 1.0
-        if orig_width > max_dim or orig_height > max_dim:
-            scale = min(max_dim / float(orig_width), max_dim / float(orig_height))
-            
-        process_width = int(orig_width * scale)
-        process_height = int(orig_height * scale)
-        
-        # Prepare output directory
-        results_dir = 'results'
-        if not os.path.exists(results_dir):
-            os.makedirs(results_dir)
+        orig_w       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # Initialize OpenCV Tracker (using MIL as it is built-in and stable across versions)
-        try:
-            tracker = cv2.TrackerMIL_create()
-        except AttributeError:
-            # Fallback
-            tracker = cv2.legacy.TrackerMIL_create()
-            
-        # Convert (x1, y1, x2, y2) to scaled (x, y, w, h)
-        x1, y1, x2, y2 = target_bbox
-        init_bbox = (
-            int(x1 * scale), 
-            int(y1 * scale), 
-            int((x2 - x1) * scale), 
-            int((y2 - y1) * scale)
-        )
+        max_dim = 640
+        scale   = (min(max_dim / orig_w, max_dim / orig_h)
+                   if (orig_w > max_dim or orig_h > max_dim) else 1.0)
+        proc_w  = int(orig_w * scale)
+        proc_h  = int(orig_h * scale)
+
+        os.makedirs('results', exist_ok=True)
+
+        # Scale user bbox to processing resolution
+        ux1, uy1, ux2, uy2 = target_bbox
+        sx1, sy1 = int(ux1 * scale), int(uy1 * scale)
+        sx2, sy2 = int(ux2 * scale), int(uy2 * scale)
         
+        # Seek to starting frame if not 0
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        # ── Frame 0 / Initial Frame : lock onto a ByteTrack track ID ──────
         ret, frame = cap.read()
         if not ret:
+            cap.release()
             return {"error": "Could not read video."}
-            
-        # Resize frame for tracker
-        process_frame = cv2.resize(frame, (process_width, process_height))
-        
-        # --- Dynamic YOLO Initialization ---
-        target_class_id = None
-        current_bbox = init_bbox
-        
-        # Run YOLO on the first scaled frame
-        detections = self.detect_objects(process_frame)
-        box_A = (init_bbox[0], init_bbox[1], init_bbox[0]+init_bbox[2], init_bbox[1]+init_bbox[3])
-        
-        best_iou = 0.0
-        best_det = None
-        for det in detections:
-            iou = self.calculate_iou(box_A, det['bbox'])
-            if iou > best_iou:
-                best_iou = iou
-                best_det = det
-                
-        # Snap to YOLO object if there's a good overlap
-        if best_iou > 0.3 and best_det is not None:
-            target_class_id = best_det['class']
-            bx1, by1, bx2, by2 = best_det['bbox']
-            current_bbox = (bx1, by1, bx2 - bx1, by2 - by1)
-            print(f"Target locked to YOLO class {target_class_id} ({best_det['class_name']}) with IoU {best_iou:.2f}")
-
-        # Initialize OpenCV Tracker (MIL)
-        try:
-            tracker = cv2.TrackerMIL_create()
-        except AttributeError:
-            tracker = cv2.legacy.TrackerMIL_create()
-            
-        tracker.init(process_frame, current_bbox)
 
         first_frame_bgr = frame.copy()
-        frame_idx = 1
-        
-        disappeared = False
-        disappearance_frame_idx = 0
-        
-        # Edge margin conceptually scaled
-        edge_margin = max(5, int(min(process_width, process_height) * 0.01)) 
+        pf0 = cv2.resize(frame, (proc_w, proc_h))
 
+        res0 = self.model.track(pf0, persist=True, verbose=False)
+
+        target_track_id = None
+        target_class_id = None
+        current_xyxy    = (sx1, sy1, sx2, sy2)
+
+        if res0 and res0[0].boxes is not None and len(res0[0].boxes):
+            user_cx = (sx1 + sx2) // 2
+            user_cy = (sy1 + sy2) // 2
+            best_iou   = -1.0
+            best_cdist = float('inf')
+            best_box   = None
+
+            for box in res0[0].boxes:
+                bx1, by1, bx2, by2 = [int(v) for v in box.xyxy[0].tolist()]
+                iou = self.calculate_iou((sx1, sy1, sx2, sy2),
+                                         (bx1, by1, bx2, by2))
+                cd  = abs((bx1 + bx2) // 2 - user_cx) + \
+                      abs((by1 + by2) // 2 - user_cy)
+                if iou > best_iou or (iou == best_iou and cd < best_cdist):
+                    best_iou, best_cdist, best_box = iou, cd, box
+
+            if best_box is not None:
+                bx1, by1, bx2, by2 = [int(v) for v in best_box.xyxy[0].tolist()]
+                target_class_id = int(best_box.cls[0].item())
+                if best_box.id is not None:
+                    target_track_id = int(best_box.id[0].item())
+                current_xyxy = (bx1, by1, bx2, by2)
+                print(f"[Frame 0] Locked → track_id={target_track_id}, "
+                      f"class={res0[0].names[target_class_id]} (IoU={best_iou:.2f})")
+
+        edge_margin = max(5, int(min(proc_w, proc_h) * 0.015))
+
+        def _at_edge(b):
+            return (b[0] <= edge_margin or b[1] <= edge_margin or
+                    b[2] >= proc_w - edge_margin or
+                    b[3] >= proc_h - edge_margin)
+
+        def _cdist(b1, b2):
+            return (abs((b1[0] + b1[2]) // 2 - (b2[0] + b2[2]) // 2) +
+                    abs((b1[1] + b1[3]) // 2 - (b2[1] + b2[3]) // 2))
+
+        # Velocity tracking for extrapolation during skipped frames
+        prev_xyxy = current_xyxy
+        vel_x = 0
+        vel_y = 0
+
+        frame_idx               = start_frame + 1
+        disappeared             = False
+        disappearance_frame_idx = 0
+        miss_streak             = 0
+        edge_streak             = 0
+
+        # ── Per-frame loop ─────────────────────────────────────────────────
         while cap.isOpened():
+            if stop_event is not None and stop_event.is_set():
+                cap.release()
+                return {'stopped': True, 'last_frame_idx': frame_idx - 1}
+
             ret, frame = cap.read()
             if not ret:
                 break
-                
-            current_bgr_frame = frame.copy()
-            process_frame = cv2.resize(frame, (process_width, process_height))
-            
-            # 1. Update MIL tracker first as a baseline
-            kcf_success, kcf_bbox = tracker.update(process_frame)
-            
-            # 2. Try to find the object with YOLO if we locked onto a class
-            yolo_match_found = False
-            if target_class_id is not None:
-                detections = self.detect_objects(process_frame)
-                
-                # Compare against expected position
-                pred_bbox = kcf_bbox if kcf_success else current_bbox
-                box_pred = (pred_bbox[0], pred_bbox[1], pred_bbox[0]+pred_bbox[2], pred_bbox[1]+pred_bbox[3])
-                
-                # Prevent YOLO from finding a new object if the current object is already touching or very close to the edge.
-                pred_tx, pred_ty, pred_tw, pred_th = [int(v) for v in pred_bbox]
-                is_near_edge = (
-                    pred_tx <= edge_margin * 3 or 
-                    pred_ty <= edge_margin * 3 or 
-                    (pred_tx + pred_tw) >= (process_width - edge_margin * 3) or 
-                    (pred_ty + pred_th) >= (process_height - edge_margin * 3)
-                )
 
-                best_iou = 0.0
-                best_det = None
-                
-                if not is_near_edge:
-                    for det in detections:
-                        if det['class'] == target_class_id:
-                            iou = self.calculate_iou(box_pred, det['bbox'])
-                            if iou > best_iou:
-                                best_iou = iou
-                                best_det = det
-                                
-                # If YOLO found a good match and we are not near the edge, snap to it and re-init MIL
-                if best_iou > 0.4 and best_det is not None:
-                    bx1, by1, bx2, by2 = best_det['bbox']
-                    current_bbox = (bx1, by1, bx2 - bx1, by2 - by1)
-                    yolo_match_found = True
-                    
-                    try:
-                        tracker = cv2.TrackerMIL_create()
-                    except AttributeError:
-                        tracker = cv2.legacy.TrackerMIL_create()
-                    tracker.init(process_frame, current_bbox)
-            
-            # 3. Resolve current bbox state
-            if yolo_match_found:
-                success = True
-                bbox = current_bbox
+            current_bgr = frame.copy()
+
+            run_yolo = (frame_idx % frame_skip == 0)
+
+            if run_yolo:
+                pf = cv2.resize(frame, (proc_w, proc_h))
+                res = self.model.track(pf, persist=True, verbose=False)
+
+                found_xyxy      = None
+                same_class_dets = []
+
+                if res and res[0].boxes is not None and len(res[0].boxes):
+                    for box in res[0].boxes:
+                        cls_id = int(box.cls[0].item())
+                        bx1, by1, bx2, by2 = [int(v) for v in box.xyxy[0].tolist()]
+                        det = (bx1, by1, bx2, by2)
+
+                        if target_class_id is None or cls_id == target_class_id:
+                            same_class_dets.append(det)
+
+                        if (found_xyxy is None and
+                                target_track_id is not None and
+                                box.id is not None and
+                                int(box.id[0].item()) == target_track_id):
+                            found_xyxy = det
+
+                    if found_xyxy is None and same_class_dets:
+                        found_xyxy = min(same_class_dets,
+                                         key=lambda b: _cdist(b, current_xyxy))
+
+                # ── Disappearance / edge logic (only on YOLO frames) ───────
+                if found_xyxy is not None:
+                    miss_streak = 0
+                    # Update velocity for extrapolation
+                    vel_x = ((found_xyxy[0] + found_xyxy[2]) // 2 -
+                             (prev_xyxy[0] + prev_xyxy[2]) // 2) // frame_skip
+                    vel_y = ((found_xyxy[1] + found_xyxy[3]) // 2 -
+                             (prev_xyxy[1] + prev_xyxy[3]) // 2) // frame_skip
+                    prev_xyxy    = current_xyxy
+                    current_xyxy = found_xyxy
+
+                    bx1, by1, bx2, by2 = found_xyxy
+
+                    if _at_edge(found_xyxy):
+                        interior = [b for b in same_class_dets if not _at_edge(b)]
+                        if interior:
+                            found_xyxy = min(interior,
+                                             key=lambda b: _cdist(b, current_xyxy))
+                            current_xyxy = found_xyxy
+                            bx1, by1, bx2, by2 = found_xyxy
+                            edge_streak = 0
+                        else:
+                            edge_streak += 1
+                            if edge_streak >= EDGE_PATIENCE:
+                                disappeared             = True
+                                disappearance_frame_idx = frame_idx
+                                break
+                    else:
+                        edge_streak = 0
+
+                else:
+                    miss_streak += 1
+                    edge_streak  = 0
+                    # Keep extrapolating — don't move current_xyxy
+                    if miss_streak >= MISS_PATIENCE:
+                        disappeared             = True
+                        disappearance_frame_idx = frame_idx
+                        break
+
             else:
-                success = kcf_success
-                bbox = kcf_bbox
-                if success:
-                    current_bbox = kcf_bbox
-            
-            if success:
-                # Bbox is (x, y, w, h) on scaled frame
-                tx, ty, tw, th = [int(v) for v in bbox]
-                
-                # Check if it touches the borders
-                if (tx <= edge_margin or 
-                    ty <= edge_margin or 
-                    (tx + tw) >= (process_width - edge_margin) or 
-                    (ty + th) >= (process_height - edge_margin)):
-                    
-                    disappeared = True
-                    disappearance_frame_idx = frame_idx
-                    break
-                    
-                # Callback for live tracking
-                if frame_callback:
-                    ux, uy, uw, uh = tx/scale, ty/scale, tw/scale, th/scale
-                    unscaled_bbox = (int(ux), int(uy), int(ux+uw), int(uy+uh))
-                    
-                    frame_rgb = cv2.cvtColor(current_bgr_frame, cv2.COLOR_BGR2RGB)
-                    frame_callback(frame_rgb, unscaled_bbox)
-            else:
-                # Tracker lost the object
-                disappeared = True
-                disappearance_frame_idx = frame_idx
-                break
-                
+                # Skipped frame: only extrapolate if we currently have a good lock
+                if miss_streak == 0:
+                    w = current_xyxy[2] - current_xyxy[0]
+                    h = current_xyxy[3] - current_xyxy[1]
+                    cx = (current_xyxy[0] + current_xyxy[2]) // 2 + vel_x
+                    cy = (current_xyxy[1] + current_xyxy[3]) // 2 + vel_y
+                    cx = max(w // 2, min(proc_w - w // 2, cx))
+                    cy = max(h // 2, min(proc_h - h // 2, cy))
+                    current_xyxy = (cx - w // 2, cy - h // 2,
+                                    cx + w // 2, cy + h // 2)
+
+            # Live feed — hide box while object is temporarily missing
+            if frame_callback:
+                frame_rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
+                if miss_streak > 0:
+                    # Object not found yet — show frame with no bbox
+                    frame_callback(frame_rgb, None)
+                else:
+                    bx1, by1, bx2, by2 = current_xyxy
+                    ox1, oy1 = int(bx1 / scale), int(by1 / scale)
+                    ox2, oy2 = int(bx2 / scale), int(by2 / scale)
+                    frame_callback(frame_rgb, (ox1, oy1, ox2, oy2))
+
             frame_idx += 1
-            if progress_callback and frame_idx % 5 == 0:
+            if progress_callback and frame_idx % 10 == 0:
                 progress_callback(frame_idx, total_frames)
 
-        # Build results
-        res = {'disappeared': disappeared}
-        if disappeared:
-            seconds = int(disappearance_frame_idx / fps)
-            res['timestamp'] = str(timedelta(seconds=seconds))
-            
-            # Extract OCR Timestamp from the target frame
-            try:
-                import easyocr
-                h, w, _ = current_bgr_frame.shape
-                # Crop top right region (top 20%, right 50%)
-                crop = current_bgr_frame[0:int(h*0.2), int(w*0.5):w]
-                reader = easyocr.Reader(['en'], gpu=False)
-                ocr_result = reader.readtext(crop, detail=0)
-                timestamp_ocr = " ".join(ocr_result)
-                if timestamp_ocr.strip():
-                    res['timestamp_ocr'] = timestamp_ocr.strip()
-            except Exception as e:
-                print(f"OCR failed or EasyOCR not installed: {e}")
-            
-            before_path = os.path.join(results_dir, "before_disappearance.jpg")
-            after_path = os.path.join(results_dir, "after_disappearance.jpg")
-            
-            cv2.imwrite(before_path, first_frame_bgr)
-            cv2.imwrite(after_path, current_bgr_frame)
-            
-            res['frame_before_path'] = before_path
-            res['frame_after_path'] = after_path
-        
-        cap.release()
-        return res
+        # ── Build result dict ──────────────────────────────────────────────
+        res_dict = {'disappeared': disappeared, 'last_frame_idx': frame_idx - 1}
 
+        if disappeared:
+            seconds               = int(disappearance_frame_idx / fps)
+            res_dict['timestamp'] = str(timedelta(seconds=seconds))
+
+            try:
+                import easyocr, warnings
+                warnings.filterwarnings("ignore", category=UserWarning,
+                                        module="torch.utils.data.dataloader")
+                h, w, _ = current_bgr.shape
+                crop    = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
+                reader  = easyocr.Reader(['en'], gpu=False, verbose=False)
+                ocr_txt = " ".join(reader.readtext(crop, detail=0)).strip()
+                if ocr_txt:
+                    res_dict['timestamp_ocr'] = ocr_txt
+            except Exception as e:
+                print(f"OCR skipped: {e}")
+
+            before_path = os.path.join('results', 'before_disappearance.jpg')
+            after_path  = os.path.join('results', 'after_disappearance.jpg')
+            cv2.imwrite(before_path, first_frame_bgr)
+            cv2.imwrite(after_path,  current_bgr)
+            res_dict['frame_before_path'] = before_path
+            res_dict['frame_after_path']  = after_path
+
+        cap.release()
+        return res_dict
