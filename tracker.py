@@ -1,11 +1,17 @@
 import cv2
 import os
+import sys
+from pathlib import Path
+from datetime import datetime
 from datetime import timedelta
 from ultralytics import YOLO
 
 
 class Tracker:
     def __init__(self, model_path='yolov8n.pt'):
+        # Handle PyInstaller path resolution
+        if hasattr(sys, '_MEIPASS'):
+            model_path = os.path.join(sys._MEIPASS, model_path)
         self.model = YOLO(model_path)
 
     # ── Helpers ───────────────────────────────────────────────────────────
@@ -81,7 +87,7 @@ class Tracker:
         proc_w  = int(orig_w * scale)
         proc_h  = int(orig_h * scale)
 
-        os.makedirs('results', exist_ok=True)
+        proc_h  = int(orig_h * scale)
 
         # Scale user bbox to processing resolution
         ux1, uy1, ux2, uy2 = target_bbox
@@ -245,8 +251,8 @@ class Tracker:
                     current_xyxy = (cx - w // 2, cy - h // 2,
                                     cx + w // 2, cy + h // 2)
 
-            # Live feed — hide box while object is temporarily missing
-            if frame_callback:
+            # Live feed — skip drawing intermediate frames if frame_skip > 1 to save overhead
+            if frame_callback and run_yolo:
                 frame_rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
                 if miss_streak > 0:
                     # Object not found yet — show frame with no bbox
@@ -258,7 +264,7 @@ class Tracker:
                     frame_callback(frame_rgb, (ox1, oy1, ox2, oy2))
 
             frame_idx += 1
-            if progress_callback and frame_idx % 10 == 0:
+            if progress_callback and (frame_idx % 10 == 0 or run_yolo):
                 progress_callback(frame_idx, total_frames)
 
         # ── Build result dict ──────────────────────────────────────────────
@@ -281,12 +287,8 @@ class Tracker:
             except Exception as e:
                 print(f"OCR skipped: {e}")
 
-            before_path = os.path.join('results', 'before_disappearance.jpg')
-            after_path  = os.path.join('results', 'after_disappearance.jpg')
-            cv2.imwrite(before_path, first_frame_bgr)
-            cv2.imwrite(after_path,  current_bgr)
-            res_dict['frame_before_path'] = before_path
-            res_dict['frame_after_path']  = after_path
+            res_dict['frame_before'] = first_frame_bgr
+            res_dict['frame_after']  = current_bgr
 
         cap.release()
         return res_dict

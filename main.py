@@ -3,6 +3,9 @@ from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 import threading
 import os
+import cv2
+from pathlib import Path
+from datetime import datetime
 from tracker import Tracker
 
 class DetectraApp:
@@ -447,7 +450,7 @@ class DetectraApp:
             self.results_btn.pack(side=tk.RIGHT)
             self.status_lbl.config(text="Disappearance detected!")
             timestamp_text = results.get('timestamp_ocr', results['timestamp'])
-            self.info_lbl.config(text=f"Object disappeared at: {timestamp_text}\nSnapshots saved to RESULTS folder.", foreground="red")
+            self.info_lbl.config(text=f"Object disappeared at: {timestamp_text}\nClick 'Show Last Results' to export snapshots.", foreground="red")
             self.show_results_window(results)
         else:
             self.status_lbl.config(text="Tracking finished. Object never disappeared.")
@@ -482,10 +485,15 @@ class DetectraApp:
         lbl_a_img = ttk.Label(frames_frame, anchor="center")
         lbl_a_img.grid(row=1, column=1, sticky="nsew", padx=10)
         
-        # Load original images
-        orig_img_b = Image.open(results['frame_before_path'])
-        orig_img_a = Image.open(results['frame_after_path'])
+        # Load original images from memory (BGR to RGB)
+        orig_img_b = Image.fromarray(cv2.cvtColor(results['frame_before'], cv2.COLOR_BGR2RGB))
+        orig_img_a = Image.fromarray(cv2.cvtColor(results['frame_after'], cv2.COLOR_BGR2RGB))
         
+        # Export Button
+        export_btn = ttk.Button(res_win, text="Export Results...", style="Accent.TButton", 
+                                command=lambda: self.export_results(results))
+        export_btn.pack(pady=10)
+
         res_win.resize_timer = None
         
         def resize_images(event=None):
@@ -516,6 +524,30 @@ class DetectraApp:
             res_win.resize_timer = res_win.after(100, lambda: resize_images(event))
             
         frames_frame.bind("<Configure>", on_resize)
+
+    def export_results(self, results):
+        # Default to Documents folder
+        initial_dir = str(Path.home() / "Documents")
+        export_base = filedialog.askdirectory(title="Select Export Directory", initialdir=initial_dir)
+        
+        if not export_base:
+            return
+            
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_dir = Path(export_base) / f"DetectraResults_{timestamp}"
+        
+        try:
+            os.makedirs(export_dir, exist_ok=True)
+            
+            before_path = export_dir / "before_disappearance.jpg"
+            after_path = export_dir / "after_disappearance.jpg"
+            
+            cv2.imwrite(str(before_path), results['frame_before'])
+            cv2.imwrite(str(after_path), results['frame_after'])
+            
+            messagebox.showinfo("Export Successful", f"Results exported to:\n{export_dir}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export results: {e}")
 
 if __name__ == "__main__":
     # Workaround for blurry text on windows High DPI displays
