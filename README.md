@@ -37,7 +37,7 @@ Captured outputs include:
 * Frame before disappearance
 * Frame after disappearance
 * Timestamp of disappearance
-* Optional OCR extraction of timestamps from the video
+* OCR extraction of timestamps from the video
 
 Saved outputs are organized into unique folders to prevent overwriting.
 
@@ -69,8 +69,7 @@ You can run Detectra in two ways.
 
 1. Go to the **Releases** page of this repository.
 2. Download the latest release.
-3. Extract the ZIP file.
-4. Run:
+3. Run:
 
 ```
 Detectra.exe
@@ -83,7 +82,7 @@ No installation is required.
 Clone the repository:
 
 ```
-git clone https://github.com/yourusername/detectra.git
+git clone https://github.com/NEIL-DANIEL-A/Detectra.git
 cd detectra
 ```
 
@@ -146,7 +145,6 @@ Description:
 | main.py    | Application entry point                           |
 | tracker.py | Object tracking and disappearance detection logic |
 | yolov8n.pt | YOLO model weights                                |
-| results/   | Output frames generated during detection          |
 
 ---
 
@@ -178,7 +176,6 @@ Planned features include:
 * Faster inference optimization
 * Real-time camera monitoring
 * Improved user interface
-* Exportable disappearance reports
 
 ---
 
@@ -187,7 +184,7 @@ Planned features include:
 Current version:
 
 ```
-v1.0.0
+v1.1.0
 ```
 
 See the **Releases** page for downloadable builds.
