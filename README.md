@@ -132,8 +132,6 @@ If the object disappears, Detectra automatically records the event and saves evi
 ```
 Detectra/
 │
-results/
-│
 main.py
 tracker.py
 requirements.txt
