@@ -62,7 +62,7 @@ class Tracker:
         frame_skip  : Run YOLO only every N frames. Skipped frames reuse the
                       last known / linearly-extrapolated bbox — making processing
                       ~N× faster while keeping accuracy high for slow/normal
-                      moving objects (default = 3).
+                      moving objects (default = 2).
 
         MISS_PATIENCE : Number of *processed* (YOLO-checked) frames with no
                         detection before declaring disappearance.
@@ -266,6 +266,16 @@ class Tracker:
             frame_idx += 1
             if progress_callback and (frame_idx % 10 == 0 or run_yolo):
                 progress_callback(frame_idx, total_frames)
+
+        # ── Handle disappearance at video end ──────────────────────────────
+        # If the video ended but the object was missing for a few frames, 
+        # count it as a disappearance.
+        MIN_END_MISS = 5
+        if not disappeared and miss_streak >= MIN_END_MISS:
+            disappeared = True
+            # The object was last seen 'miss_streak' YOLO-calls ago.
+            # Convert that back to raw frame count.
+            disappearance_frame_idx = frame_idx - (miss_streak * frame_skip)
 
         # ── Build result dict ──────────────────────────────────────────────
         res_dict = {'disappeared': disappeared, 'last_frame_idx': frame_idx - 1}
