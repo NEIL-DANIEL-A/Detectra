@@ -112,7 +112,6 @@ Run the application:
 python main.py
 ```
 
----
 
 # Usage
 
@@ -146,7 +145,6 @@ Description:
 | tracker.py | Object tracking and disappearance detection logic |
 | yolov8n.pt | YOLO model weights                                |
 
----
 
 # Technologies Used
 
@@ -158,15 +156,12 @@ Detectra is built using the following technologies:
 * **EasyOCR** — Timestamp extraction
 * **PyInstaller** — Desktop application packaging
 
----
 
 # Known Limitations
 
 * Extremely small objects may be harder to track reliably
 * Crowded scenes with similar objects may cause tracking switches
 * Large videos may require longer processing times
-
----
 
 # Future Improvements
 
@@ -177,7 +172,6 @@ Planned features include:
 * Real-time camera monitoring
 * Improved user interface
 
----
 
 # Release
 
@@ -189,7 +183,6 @@ v1.1.0
 
 See the **Releases** page for downloadable builds.
 
----
 
 # License
 
