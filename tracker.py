@@ -6,12 +6,18 @@ from datetime import datetime
 from datetime import timedelta
 from ultralytics import YOLO
 
+# ─────────────────────────────────────────
+#  MODEL PATHS (loaded from AppData)
+# ─────────────────────────────────────────
+APP_DATA_DIR = Path(os.getenv("LOCALAPPDATA")) / "Detectra"
+MODELS_DIR   = APP_DATA_DIR / "models"
+EASYOCR_DIR  = APP_DATA_DIR / "easyocr"
+
 
 class Tracker:
-    def __init__(self, model_path='yolov8n.pt'):
-        # Handle PyInstaller path resolution
-        if hasattr(sys, '_MEIPASS'):
-            model_path = os.path.join(sys._MEIPASS, model_path)
+    def __init__(self):
+        # Load YOLO model from AppData instead of bundled path
+        model_path = str(MODELS_DIR / "yolov8n.pt")
         self.model = YOLO(model_path)
 
     # ── Helpers ───────────────────────────────────────────────────────────
@@ -69,7 +75,7 @@ class Tracker:
         EDGE_PATIENCE : Processed frames where bbox is only at edge before exit.
         """
 
-        MISS_PATIENCE = 30    # processed frames (actual YOLO calls, not raw frames)
+        MISS_PATIENCE = 30
         EDGE_PATIENCE = 5
 
         cap = cv2.VideoCapture(video_path)
@@ -89,16 +95,13 @@ class Tracker:
 
         proc_h  = int(orig_h * scale)
 
-        # Scale user bbox to processing resolution
         ux1, uy1, ux2, uy2 = target_bbox
         sx1, sy1 = int(ux1 * scale), int(uy1 * scale)
         sx2, sy2 = int(ux2 * scale), int(uy2 * scale)
-        
-        # Seek to starting frame if not 0
+
         if start_frame > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-        # ── Frame 0 / Initial Frame : lock onto a ByteTrack track ID ──────
         ret, frame = cap.read()
         if not ret:
             cap.release()
@@ -149,7 +152,6 @@ class Tracker:
             return (abs((b1[0] + b1[2]) // 2 - (b2[0] + b2[2]) // 2) +
                     abs((b1[1] + b1[3]) // 2 - (b2[1] + b2[3]) // 2))
 
-        # Velocity tracking for extrapolation during skipped frames
         prev_xyxy = current_xyxy
         vel_x = 0
         vel_y = 0
@@ -160,7 +162,6 @@ class Tracker:
         miss_streak             = 0
         edge_streak             = 0
 
-        # ── Per-frame loop ─────────────────────────────────────────────────
         while cap.isOpened():
             if stop_event is not None and stop_event.is_set():
                 cap.release()
@@ -171,7 +172,6 @@ class Tracker:
                 break
 
             current_bgr = frame.copy()
-
             run_yolo = (frame_idx % frame_skip == 0)
 
             if run_yolo:
@@ -200,10 +200,8 @@ class Tracker:
                         found_xyxy = min(same_class_dets,
                                          key=lambda b: _cdist(b, current_xyxy))
 
-                # ── Disappearance / edge logic (only on YOLO frames) ───────
                 if found_xyxy is not None:
                     miss_streak = 0
-                    # Update velocity for extrapolation
                     vel_x = ((found_xyxy[0] + found_xyxy[2]) // 2 -
                              (prev_xyxy[0] + prev_xyxy[2]) // 2) // frame_skip
                     vel_y = ((found_xyxy[1] + found_xyxy[3]) // 2 -
@@ -233,14 +231,12 @@ class Tracker:
                 else:
                     miss_streak += 1
                     edge_streak  = 0
-                    # Keep extrapolating — don't move current_xyxy
                     if miss_streak >= MISS_PATIENCE:
                         disappeared             = True
                         disappearance_frame_idx = frame_idx
                         break
 
             else:
-                # Skipped frame: only extrapolate if we currently have a good lock
                 if miss_streak == 0:
                     w = current_xyxy[2] - current_xyxy[0]
                     h = current_xyxy[3] - current_xyxy[1]
@@ -251,11 +247,9 @@ class Tracker:
                     current_xyxy = (cx - w // 2, cy - h // 2,
                                     cx + w // 2, cy + h // 2)
 
-            # Live feed — skip drawing intermediate frames if frame_skip > 1 to save overhead
             if frame_callback and run_yolo:
                 frame_rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
                 if miss_streak > 0:
-                    # Object not found yet — show frame with no bbox
                     frame_callback(frame_rgb, None)
                 else:
                     bx1, by1, bx2, by2 = current_xyxy
@@ -267,17 +261,11 @@ class Tracker:
             if progress_callback and (frame_idx % 10 == 0 or run_yolo):
                 progress_callback(frame_idx, total_frames)
 
-        # ── Handle disappearance at video end ──────────────────────────────
-        # If the video ended but the object was missing for a few frames, 
-        # count it as a disappearance.
         MIN_END_MISS = 5
         if not disappeared and miss_streak >= MIN_END_MISS:
             disappeared = True
-            # The object was last seen 'miss_streak' YOLO-calls ago.
-            # Convert that back to raw frame count.
             disappearance_frame_idx = frame_idx - (miss_streak * frame_skip)
 
-        # ── Build result dict ──────────────────────────────────────────────
         res_dict = {'disappeared': disappeared, 'last_frame_idx': frame_idx - 1}
 
         if disappeared:
@@ -290,7 +278,13 @@ class Tracker:
                                         module="torch.utils.data.dataloader")
                 h, w, _ = current_bgr.shape
                 crop    = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
-                reader  = easyocr.Reader(['en'], gpu=False, verbose=False)
+                # ── Load EasyOCR from AppData directory ──
+                reader  = easyocr.Reader(
+                    ['en'],
+                    gpu=False,
+                    verbose=False,
+                    model_storage_directory=str(EASYOCR_DIR)
+                )
                 ocr_txt = " ".join(reader.readtext(crop, detail=0)).strip()
                 if ocr_txt:
                     res_dict['timestamp_ocr'] = ocr_txt
