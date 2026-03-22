@@ -16,26 +16,26 @@ FLAG_FILE    = APP_DATA_DIR / "setup_complete.flag"
 
 DOWNLOADS = [
     {
-        "name"  : "YOLOv8 Nano Model",
-        "url"   : "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
-        "dest"  : MODELS_DIR / "yolov8n.pt",
-        "size"  : "6.2 MB",
-        "zip"   : False
+        "name"      : "YOLOv8 Nano Model",
+        "url"       : "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt",
+        "dest"      : MODELS_DIR / "yolov8n.pt",
+        "size"      : "6.2 MB",
+        "zip"       : False
     },
     {
-        "name"  : "EasyOCR Detection Model",
-        "url"   : "https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/craft_mlt_25k.zip",
-        "dest"  : EASYOCR_DIR / "craft_mlt_25k.zip",
-        "size"  : "80 MB",
-        "zip"   : True,
+        "name"      : "EasyOCR Detection Model",
+        "url"       : "https://github.com/JaidedAI/EasyOCR/releases/download/pre-v1.1.6/craft_mlt_25k.zip",
+        "dest"      : EASYOCR_DIR / "craft_mlt_25k.zip",
+        "size"      : "80 MB",
+        "zip"       : True,
         "extract_to": EASYOCR_DIR
     },
     {
-        "name"  : "EasyOCR Recognition Model",
-        "url"   : "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.zip",
-        "dest"  : EASYOCR_DIR / "english_g2.zip",
-        "size"  : "40 MB",
-        "zip"   : True,
+        "name"      : "EasyOCR Recognition Model",
+        "url"       : "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.zip",
+        "dest"      : EASYOCR_DIR / "english_g2.zip",
+        "size"      : "40 MB",
+        "zip"       : True,
         "extract_to": EASYOCR_DIR
     }
 ]
@@ -52,19 +52,24 @@ class SetupScreen:
         self.root.resizable(False, False)
         self.root.configure(bg="#1E1E2E")
         self.root.attributes('-topmost', True)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Center window
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        self.root.geometry(f"560x520+{(sw-560)//2}+{(sh-520)//2}")
+        self.root.geometry(f"560x520+{(sw - 560) // 2}+{(sh - 520) // 2}")
 
         self._build_ui()
-
         threading.Thread(target=self._run_setup, daemon=True).start()
         self.root.mainloop()
 
+    def _on_close(self):
+        from tkinter import messagebox
+        messagebox.showwarning(
+            "Setup in Progress",
+            "Please wait for the setup to complete before closing."
+        )
+
     def _build_ui(self):
-        # ── Header ──
         tk.Label(self.root, text="🎯 Detectra",
                  font=("Segoe UI", 26, "bold"),
                  bg="#1E1E2E", fg="#89B4FA").pack(pady=(30, 4))
@@ -79,25 +84,25 @@ class SetupScreen:
                  font=("Segoe UI", 9),
                  bg="#1E1E2E", fg="#6C7086").pack(pady=(2, 0))
 
-        # ── Progress bars container ──
         self.container = tk.Frame(self.root, bg="#1E1E2E")
         self.container.pack(pady=20, padx=40, fill=tk.X)
 
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("Done.Horizontal.TProgressbar",
-                         troughcolor="#313244", background="#A6E3A1")  # green when done
+                         troughcolor="#313244", background="#A6E3A1")
         style.configure("Active.Horizontal.TProgressbar",
-                         troughcolor="#313244", background="#89B4FA")  # blue when active
+                         troughcolor="#313244", background="#89B4FA")
         style.configure("Wait.Horizontal.TProgressbar",
-                         troughcolor="#313244", background="#45475A")  # grey when waiting
+                         troughcolor="#313244", background="#45475A")
+        style.configure("Error.Horizontal.TProgressbar",
+                         troughcolor="#313244", background="#F38BA8")
 
         self.bars       = []
         self.pct_labels = []
         self.ico_labels = []
 
         for i, item in enumerate(DOWNLOADS):
-            # Row: icon + name + size
             row = tk.Frame(self.container, bg="#1E1E2E")
             row.pack(fill=tk.X, pady=(12, 2))
 
@@ -115,7 +120,6 @@ class SetupScreen:
                      font=("Segoe UI", 9),
                      bg="#1E1E2E", fg="#6C7086").pack(side=tk.RIGHT)
 
-            # Progress bar
             bar = ttk.Progressbar(self.container,
                                    style="Wait.Horizontal.TProgressbar",
                                    orient="horizontal",
@@ -124,14 +128,12 @@ class SetupScreen:
             bar.pack(fill=tk.X)
             self.bars.append(bar)
 
-            # Percent label
             pct = tk.Label(self.container, text="Waiting...",
                            font=("Segoe UI", 9),
                            bg="#1E1E2E", fg="#6C7086", anchor="w")
             pct.pack(fill=tk.X, pady=(1, 0))
             self.pct_labels.append(pct)
 
-        # ── Overall status ──
         sep = tk.Frame(self.root, bg="#313244", height=1)
         sep.pack(fill=tk.X, padx=40, pady=(10, 0))
 
@@ -140,7 +142,6 @@ class SetupScreen:
                  font=("Segoe UI", 10),
                  bg="#1E1E2E", fg="#A6ADC8").pack(pady=10)
 
-        # Overall progress bar
         self.overall_bar = ttk.Progressbar(self.root,
                                             style="Active.Horizontal.TProgressbar",
                                             orient="horizontal",
@@ -166,7 +167,6 @@ class SetupScreen:
 
     # ── Core setup logic ──
     def _run_setup(self):
-        # Create all directories
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         EASYOCR_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -184,58 +184,97 @@ class SetupScreen:
             else:
                 self._set_icon(i, "❌", "#F38BA8")
                 all_ok = False
-        # ✅ Fixed — import and call correctly
+
         if all_ok:
             FLAG_FILE.write_text("setup_complete")
             self.status_var.set("✅ All done! Launching Detectra...")
             import time; time.sleep(1.2)
-            self.root.destroy()
-            # Import and launch the main app from main.py
-            from main import _launch_app
-            _launch_app()
+            self.root.after(0, self._open_main_app)
         else:
-            self.status_var.set("❌ Some downloads failed. Check your internet and restart.")
+            self.status_var.set("❌ Some downloads failed. Check internet and restart.")
+            self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+
+    def _open_main_app(self):
+        """Runs on main thread — destroys setup and opens splash screen."""
+        self.root.destroy()
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
+        # ── Directly create new Tk root and launch splash ──
+        from main import SplashScreen
+        new_root = tk.Tk()
+        SplashScreen(new_root)
+        new_root.mainloop()
 
     def _download(self, index, item):
         dest = Path(item["dest"])
 
-        # Skip if already downloaded
-        if dest.exists():
-            self._set_bar(index, 100, "✅ Already downloaded", "Done.Horizontal.TProgressbar")
-            return True
+        # Check if already fully downloaded
+        if item.get("zip"):
+            extract_to = Path(item["extract_to"])
+            extracted_files = list(extract_to.glob("*.pth"))
+            if extracted_files:
+                self._set_bar(index, 100, "✅ Already downloaded",
+                              "Done.Horizontal.TProgressbar")
+                return True
+        else:
+            if dest.exists() and dest.stat().st_size > 1_000_000:
+                self._set_bar(index, 100, "✅ Already downloaded",
+                              "Done.Horizontal.TProgressbar")
+                return True
+            elif dest.exists():
+                dest.unlink()  # delete incomplete file
+
+        # Download with temp file
+        temp_dest = Path(str(dest) + ".tmp")
 
         try:
             resp  = requests.get(item["url"], stream=True, timeout=60)
+            resp.raise_for_status()
             total = int(resp.headers.get("content-length", 0))
             downloaded = 0
 
-            with open(dest, "wb") as f:
+            with open(temp_dest, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=16384):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
                         if total:
-                            pct = (downloaded / total) * 100
-                            mb  = downloaded / 1_000_000
+                            pct    = (downloaded / total) * 100
+                            mb     = downloaded / 1_000_000
                             tot_mb = total / 1_000_000
                             self._set_bar(index, pct,
                                           f"{pct:.1f}%   {mb:.1f} MB / {tot_mb:.1f} MB")
+
+            # Verify full download
+            if total and temp_dest.stat().st_size < total * 0.99:
+                temp_dest.unlink()
+                self._set_bar(index, 0, "❌ Incomplete download — retrying...",
+                              "Error.Horizontal.TProgressbar")
+                return False
+
+            # Rename temp to final
+            temp_dest.rename(dest)
 
             # Extract zip if needed
             if item.get("zip") and dest.suffix == ".zip":
                 self._set_bar(index, 100, "📦 Extracting...")
                 with zipfile.ZipFile(dest, "r") as z:
                     z.extractall(item["extract_to"])
-                dest.unlink()  # delete zip after extracting
+                dest.unlink()
 
             self._set_bar(index, 100, "✅ Complete", "Done.Horizontal.TProgressbar")
             return True
 
         except Exception as e:
-            self._set_bar(index, 0, f"❌ Error: {e}")
+            if temp_dest.exists():
+                temp_dest.unlink()
+            self._set_bar(index, 0, f"❌ Error: {e}", "Error.Horizontal.TProgressbar")
             return False
 
 
+# ─────────────────────────────────────────
 def run_setup():
     SetupScreen()
-    

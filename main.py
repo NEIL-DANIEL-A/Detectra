@@ -19,6 +19,7 @@ class SplashScreen:
         self.root.attributes('-topmost', True)
 
         w, h = 480, 280
+        self.root.update_idletasks()   # ← add this line
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
