@@ -28,7 +28,8 @@ DOWNLOADS = [
         "dest"      : EASYOCR_DIR / "craft_mlt_25k.zip",
         "size"      : "80 MB",
         "zip"       : True,
-        "extract_to": EASYOCR_DIR
+        "extract_to": EASYOCR_DIR,
+        "check_file": "craft_mlt_25k.pth"
     },
     {
         "name"      : "EasyOCR Recognition Model",
@@ -36,7 +37,8 @@ DOWNLOADS = [
         "dest"      : EASYOCR_DIR / "english_g2.zip",
         "size"      : "40 MB",
         "zip"       : True,
-        "extract_to": EASYOCR_DIR
+        "extract_to": EASYOCR_DIR,
+        "check_file": "english_g2.pth"
     }
 ]
 
@@ -213,9 +215,8 @@ class SetupScreen:
 
         # Check if already fully downloaded
         if item.get("zip"):
-            extract_to = Path(item["extract_to"])
-            extracted_files = list(extract_to.glob("*.pth"))
-            if extracted_files:
+            check_path = Path(item["extract_to"]) / item["check_file"]
+            if check_path.exists():
                 self._set_bar(index, 100, "✅ Already downloaded",
                               "Done.Horizontal.TProgressbar")
                 return True

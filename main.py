@@ -25,11 +25,11 @@ class SplashScreen:
         self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
         tk.Label(self.root, text="🎯 Detectra",
-                 font=("Segoe UI", 28, "bold"),
+                 font=("Segoe UI", 32, "bold"),
                  bg="#1E1E2E", fg="#89B4FA").pack(pady=(40, 4))
 
         tk.Label(self.root, text="Object Disappearance Detection System",
-                 font=("Segoe UI", 10),
+                 font=("Segoe UI", 12),
                  bg="#1E1E2E", fg="#A6ADC8").pack()
 
         style = ttk.Style()
@@ -47,10 +47,10 @@ class SplashScreen:
 
         self.status_var = tk.StringVar(value="Starting...")
         tk.Label(self.root, textvariable=self.status_var,
-                 font=("Segoe UI", 9),
+                 font=("Segoe UI", 10),
                  bg="#1E1E2E", fg="#6C7086").pack()
 
-        tk.Label(self.root, text="v1.1.0",
+        tk.Label(self.root, text="v2.0.0",
                  font=("Segoe UI", 8),
                  bg="#1E1E2E", fg="#45475A").place(relx=1.0, rely=1.0,
                                                     anchor="se", x=-10, y=-10)
@@ -147,25 +147,25 @@ class DetectraApp:
         self.root.configure(bg=bg_color)
 
         self.style.configure(".", background=bg_color, foreground=fg_color,
-                             font=('Segoe UI', 11))
+                             font=('Segoe UI', 12))
         self.style.configure("TButton",
-                             padding=(15, 8), relief="flat",
+                             padding=(20, 10), relief="flat",
                              background=btn_bg, foreground=fg_color,
-                             font=('Segoe UI', 11, 'bold'))
+                             font=('Segoe UI', 12, 'bold'))
         self.style.map("TButton",
                        background=[('active', btn_active), ('disabled', '#181825')],
                        foreground=[('disabled', '#585B70')])
         self.style.configure("Accent.TButton",
-                             padding=(15, 8), relief="flat",
+                             padding=(20, 10), relief="flat",
                              background=accent_color, foreground="#11111B",
-                             font=('Segoe UI', 11, 'bold'))
+                             font=('Segoe UI', 12, 'bold'))
         self.style.map("Accent.TButton",
                        background=[('active', "#B4BEFE"), ('disabled', '#181825')],
                        foreground=[('disabled', '#585B70')])
         self.style.configure("Stop.TButton",
-                             padding=(15, 8), relief="flat",
+                             padding=(20, 10), relief="flat",
                              background="#F38BA8", foreground="#11111B",
-                             font=('Segoe UI', 11, 'bold'))
+                             font=('Segoe UI', 12, 'bold'))
         self.style.map("Stop.TButton",
                        background=[('active', "#EBA0AC"), ('disabled', '#181825')],
                        foreground=[('disabled', '#585B70')])
@@ -174,9 +174,9 @@ class DetectraApp:
                              bordercolor=bg_color, lightcolor="#A6E3A1",
                              darkcolor="#A6E3A1")
         self.style.configure("TLabel", background=bg_color, foreground=fg_color,
-                             font=('Segoe UI', 11))
+                             font=('Segoe UI', 12))
         self.style.configure("TCheckbutton", background=bg_color, foreground=fg_color,
-                             font=('Segoe UI', 11))
+                             font=('Segoe UI', 12))
         self.style.map("TCheckbutton", background=[('active', bg_color)])
         self.style.configure("TFrame", background=bg_color)
 
@@ -190,7 +190,7 @@ class DetectraApp:
 
         self.status_lbl = ttk.Label(self.control_frame,
                                     text="Welcome to Detectra. Please upload a CCTV video.",
-                                    font=('Segoe UI', 12))
+                                    font=('Segoe UI', 14, 'bold'))
         self.status_lbl.pack(side=tk.LEFT, padx=10)
 
         self.start_btn = ttk.Button(self.control_frame, text="Start Tracking",
@@ -240,7 +240,7 @@ class DetectraApp:
                                       length=140, command=self._on_speed_change)
         self.speed_slider.pack(side=tk.LEFT)
         self.speed_lbl = ttk.Label(self.options_frame, text="2x",
-                                   font=('Segoe UI', 11, 'bold'), width=4)
+                                   font=('Segoe UI', 12, 'bold'), width=4)
         self.speed_lbl.pack(side=tk.LEFT, padx=(4, 0))
 
         self.results_btn = ttk.Button(self.options_frame, text="Show Last Results",
@@ -249,7 +249,7 @@ class DetectraApp:
         self.results_btn.pack_forget()
 
         self.info_lbl = ttk.Label(self.bottom_frame, text="",
-                                  font=("Segoe UI", 12, "bold"))
+                                  font=("Segoe UI", 14, "bold"))
         self.info_lbl.pack(pady=(10, 0))
 
     def _on_speed_change(self, _=None):
@@ -538,7 +538,7 @@ class DetectraApp:
 
         ttk.Label(res_win,
                   text=f"Time of Disappearance: \n{timestamp_text}",
-                  font=("Helvetica", 18, "bold"),
+                  font=("Segoe UI", 22, "bold"),
                   justify="center", anchor="center").pack(pady=15)
 
         frames_frame = ttk.Frame(res_win)
@@ -548,13 +548,13 @@ class DetectraApp:
         frames_frame.rowconfigure(1, weight=1)
 
         lbl_b_text = ttk.Label(frames_frame, text="Before Disappearance",
-                               font=("Helvetica", 14, "bold"), anchor="center")
+                               font=("Segoe UI", 16, "bold"), anchor="center")
         lbl_b_text.grid(row=0, column=0, pady=(0, 5))
         lbl_b_img = ttk.Label(frames_frame, anchor="center")
         lbl_b_img.grid(row=1, column=0, sticky="nsew", padx=10)
 
         lbl_a_text = ttk.Label(frames_frame, text="After Disappearance",
-                               font=("Helvetica", 14, "bold"), anchor="center")
+                               font=("Segoe UI", 16, "bold"), anchor="center")
         lbl_a_text.grid(row=0, column=1, pady=(0, 5))
         lbl_a_img = ttk.Label(frames_frame, anchor="center")
         lbl_a_img.grid(row=1, column=1, sticky="nsew", padx=10)

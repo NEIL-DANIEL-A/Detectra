@@ -178,7 +178,7 @@ Planned features include:
 Current version:
 
 ```
-v1.1.0
+v1.1.1
 ```
 
 See the **Releases** page for downloadable builds.
