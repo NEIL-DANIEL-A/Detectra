@@ -50,12 +50,6 @@ The system allows users to select an object within a video and intelligently tra
 4. Install requirements: `pip install -r requirements.txt`
 5. Run: `python main.py`
 
-### Building the EXE
-To build the standalone executable yourself:
-```bash
-pyinstaller main.spec
-```
-
 ---
 
 # 📂 Project Structure
@@ -65,7 +59,6 @@ pyinstaller main.spec
 | **`main.py`** | Application entry point, UI management, and Splash Screen. |
 | **`tracker.py`** | Core AI logic for YOLOv8 detection and object tracking. |
 | **`setup.py`** | Automated first-run downloader for AI models and weights. |
-| **`main.spec`** | Advanced PyInstaller configuration for Windows bundling. |
 | **`icon.ico`** | High-resolution application branding. |
 
 ---
