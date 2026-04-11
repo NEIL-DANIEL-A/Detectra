@@ -1,189 +1,99 @@
-# Detectra — Object Disappearance Detection System
+# 🎯 Detectra — Object Disappearance Detection System
 
-Detectra is an **AI-powered desktop application** designed to detect and document the disappearance of objects in CCTV and video footage.
+Detectra is a professional **AI-powered desktop application** designed to detect and document the disappearance of objects in CCTV and video footage. Version 2.1.0 introduces a comprehensive UI/UX overhaul, featuring a sleek modern design, automated setup, and enhanced stability.
 
-The system allows users to select an object within a video and intelligently track it across frames. If the object disappears from the scene, Detectra automatically captures and stores evidence frames for analysis.
+The system allows users to select an object within a video and intelligently track it across frames using high-performance computer vision. If the object disappears from the scene, Detectra automatically captures high-resolution evidence snapshots for forensic analysis.
 
-Detectra is distributed as a **portable Windows executable**, so it can run without installing Python or additional dependencies.
+---
 
-# Features
+# ✨ Key Features
 
-## Intelligent AI Tracking
+### 🚀 Modern UI & UX
+*   **Professional Branding**: Custom icons, high-DPI scaling support, and a polished dark-themed interface.
+*   **Splash Screen**: Smooth initial loading experience with real-time status updates.
+*   **Responsive Canvas**: Dynamic video scaling and interactive bounding-box selection.
 
-Detectra uses modern computer vision techniques to ensure reliable object tracking.
+### 🧠 Intelligent AI Tracking
+*   **YOLOv8 & ByteTrack**: State-of-the-art object detection and persistent tracking for reliable monitoring.
+*   **Live Preview**: Real-time visual feedback of the tracking process.
+*   **Variable Speed**: Adjustable processing speeds (1x to 10x) to handle long-duration CCTV footage efficiently.
 
-* Object detection powered by **Ultralytics YOLOv8**
-* Persistent tracking using ByteTrack
-* Manual object selection through a drag-and-select interface
-* Robust tracking across motion, partial occlusion, and scene changes
+### 🔍 Forensic Evidence Capture
+*   **Automatic Snapshots**: Captures "Before" and "After" frames the moment an object is no longer detected.
+*   **OCR Timestamp Extraction**: Automatically extracts on-screen timestamps from CCTV feeds (Alpha).
+*   **Export Management**: Organized results export with timestamped folders.
 
-## Disappearance Detection
+### 📦 Standalone Portability
+*   **Zero-Install EXE**: Packaged as a single-file portable Windows executable.
+*   **Automated Setup**: On first launch, Detectra automatically downloads and configures the required AI models.
 
-Detectra continuously monitors the tracked object and detects when it leaves the frame or can no longer be detected.
+---
 
-Capabilities include:
+# 🛠️ System Requirements
 
-* Automatic disappearance detection
-* Real-time visual tracking feedback
-* Frame-skipping logic for faster processing
-* Adjustable tracking speed for long CCTV footage
+*   **OS**: Windows 10 or 11 (64-bit)
+*   **RAM**: 8 GB (16 GB Recommended)
+*   **Dependencies**: The standalone version requires an active internet connection on the *first launch only* to download models.
 
-## Evidence Capture and Reporting
+---
 
-When a disappearance event occurs, Detectra automatically saves evidence frames.
+# 🚀 Installation & Build
 
-Captured outputs include:
+### Option 1 — Run the Executable (Recommended)
+1. Download **`Detectra_v2.1.0.exe`** from the [Releases](https://github.com/NEIL-DANIEL-A/Detectra/releases) page.
+2. Run the file directly. No installation is required.
 
-* Frame before disappearance
-* Frame after disappearance
-* Timestamp of disappearance
-* OCR extraction of timestamps from the video
+### Option 2 — Developer Setup (Source Code)
+1. Clone the repo: `git clone https://github.com/NEIL-DANIEL-A/Detectra.git`
+2. Create virtual environment: `python -m venv venv`
+3. Activate: `venv\Scripts\activate`
+4. Install requirements: `pip install -r requirements.txt`
+5. Run: `python main.py`
 
-Saved outputs are organized into unique folders to prevent overwriting.
-
-## Desktop Application
-
-Detectra is packaged as a standalone Windows application using **PyInstaller**.
-
-Key benefits:
-
-* No Python installation required
-* All dependencies bundled into a single executable
-* Portable and easy to distribute
-
-# System Requirements
-
-Recommended specifications:
-
-* Windows 10 or Windows 11
-* Minimum 8 GB RAM
-* Recommended 16 GB RAM
-* CPU inference supported
-* GPU optional but improves performance
-
-# Installation
-
-You can run Detectra in two ways.
-
-## Option 1 — Run the Executable (Recommended)
-
-1. Go to the **Releases** page of this repository.
-2. Download the latest release.
-3. Run:
-
-```
-Detectra.exe
+### Building the EXE
+To build the standalone executable yourself:
+```bash
+pyinstaller main.spec
 ```
 
-No installation is required.
+---
 
-## Option 2 — Run from Source Code
+# 📂 Project Structure
 
-Clone the repository:
+| File | Description |
+| :--- | :--- |
+| **`main.py`** | Application entry point, UI management, and Splash Screen. |
+| **`tracker.py`** | Core AI logic for YOLOv8 detection and object tracking. |
+| **`setup.py`** | Automated first-run downloader for AI models and weights. |
+| **`main.spec`** | Advanced PyInstaller configuration for Windows bundling. |
+| **`icon.ico`** | High-resolution application branding. |
 
-```
-git clone https://github.com/NEIL-DANIEL-A/Detectra.git
-cd detectra
-```
+---
 
-Create a virtual environment:
+# 🧪 Technologies Used
 
-```
-python -m venv venv
-```
+*   **Python 3.10+ & Tkinter** — Core application framework
+*   **Ultralytics YOLOv8** — State-of-the-art object detection
+*   **OpenCV & PIL** — Advanced image and video processing
+*   **EasyOCR** — Optical Character Recognition for timestamps
+*   **PyInstaller** — Secure executable distribution
 
-Activate the environment:
+---
 
-Windows
+# 📈 Current Stage & Versioning
 
-```
-venv\Scripts\activate
-```
+**Current version: v2.1.0**
 
-Install dependencies:
+### What's New in v2.1.0:
+- [x] Complete UI redesign with **Catppuccin** inspired color palette.
+- [x] Added **Windows Taskbar integration** and AppUserModelID fix.
+- [x] Integrated **Automated Model Setup** (no more manual downloads).
+- [x] Implemented **Splash Screen** with loading progress tracking.
+- [x] Fixed DPI scaling issues for high-resolution displays.
 
-```
-pip install -r requirements.txt
-```
+---
 
-Run the application:
+# 📄 License
 
-```
-python main.py
-```
-
-
-# Usage
-
-Using Detectra is simple.
-
-1. Launch the application.
-2. Upload a video file.
-3. Select the object to track by drawing a bounding box.
-4. Click **Start Tracking**.
-5. Detectra will monitor the object throughout the video.
-
-If the object disappears, Detectra automatically records the event and saves evidence frames.
-
-# Project Structure
-
-```
-Detectra/
-│
-main.py
-tracker.py
-requirements.txt
-yolov8n.pt
-README.md
-```
-
-Description:
-
-| File       | Purpose                                           |
-| ---------- | ------------------------------------------------- |
-| main.py    | Application entry point                           |
-| tracker.py | Object tracking and disappearance detection logic |
-| yolov8n.pt | YOLO model weights                                |
-
-
-# Technologies Used
-
-Detectra is built using the following technologies:
-
-* **Ultralytics YOLOv8** — Object detection
-* **PyTorch** — Deep learning framework
-* **OpenCV** — Video processing
-* **EasyOCR** — Timestamp extraction
-* **PyInstaller** — Desktop application packaging
-
-
-# Known Limitations
-
-* Extremely small objects may be harder to track reliably
-* Crowded scenes with similar objects may cause tracking switches
-* Large videos may require longer processing times
-
-# Future Improvements
-
-Planned features include:
-
-* Multi-object tracking support
-* Faster inference optimization
-* Real-time camera monitoring
-* Improved user interface
-
-
-# Release
-
-Current version:
-
-```
-v1.1.1
-```
-
-See the **Releases** page for downloadable builds.
-
-
-# License
-
-This project is released for educational and research purposes.
+This project is developed for educational and research purposes.
+Copyright © 2026 NEIL DANIEL A.
