@@ -93,7 +93,13 @@ pyinstaller main.spec
 
 ---
 
+## 👥 Contributors
+
+- **[Neil Daniel A](https://github.com/NEIL-DANIEL-A)**   
+- **[Monica B](https://github.com/Monica-403)**
+
+---
+
 # 📄 License
 
 This project is developed for educational and research purposes.
-Copyright © 2026 NEIL DANIEL A.
