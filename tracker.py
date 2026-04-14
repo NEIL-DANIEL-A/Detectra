@@ -16,7 +16,6 @@ EASYOCR_DIR  = APP_DATA_DIR / "easyocr"
 
 class Tracker:
     def __init__(self):
-        # Load YOLO model from AppData instead of bundled path
         model_path = str(MODELS_DIR / "yolov8n.pt")
         self.model = YOLO(model_path)
 
@@ -42,9 +41,9 @@ class Tracker:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 cls_id = int(box.cls[0].item())
                 detections.append({
-                    'bbox': (int(x1), int(y1), int(x2), int(y2)),
+                    'bbox'      : (int(x1), int(y1), int(x2), int(y2)),
                     'confidence': box.conf[0].item(),
-                    'class': cls_id,
+                    'class'     : cls_id,
                     'class_name': r.names[cls_id],
                 })
         return detections
@@ -57,26 +56,92 @@ class Tracker:
         aB = (boxB[2] - boxB[0] + 1) * (boxB[3] - boxB[1] + 1)
         return inter / float(aA + aB - inter)
 
+    def _init_csrt(self, frame, bbox):
+        """
+        Initialize CSRT tracker on given frame and bbox.
+        bbox: (x1, y1, x2, y2) → converted to (x, y, w, h) for OpenCV.
+        """
+        tracker = cv2.TrackerCSRT_create()
+        x1, y1, x2, y2 = bbox
+        tracker.init(frame, (x1, y1, x2 - x1, y2 - y1))
+        return tracker
+
+    def _csrt_update(self, csrt, frame):
+        """
+        Update CSRT tracker.
+        Returns (x1, y1, x2, y2) if tracking, or None if lost.
+        """
+        ok, box = csrt.update(frame)
+        if not ok:
+            return None
+        x, y, w, h = [int(v) for v in box]
+        return (x, y, x + w, y + h)
+
+    def _csrt_still_valid(self, csrt_bbox, last_yolo_bbox,
+                           frames_since_yolo, max_allowed_frames=10):
+        """
+        Validate whether CSRT result should be trusted.
+
+        CSRT is trusted ONLY when:
+        1. It hasn't been too long since YOLO last confirmed the object
+        2. CSRT bbox hasn't moved too far from last known YOLO position
+
+        This prevents CSRT from falsely tracking background after
+        the object has disappeared.
+
+        Returns True if CSRT is trustworthy, False if it should be ignored.
+        """
+        # ── Rule 1: Don't trust CSRT if YOLO hasn't confirmed
+        #            the object for too many frames ──────────────────────
+        if frames_since_yolo > max_allowed_frames:
+            return False
+
+        # ── Rule 2: Don't trust CSRT if it has drifted too far
+        #            from last known YOLO position ─────────────────────
+        if last_yolo_bbox is not None:
+            cx_csrt  = (csrt_bbox[0] + csrt_bbox[2]) // 2
+            cy_csrt  = (csrt_bbox[1] + csrt_bbox[3]) // 2
+            cx_yolo  = (last_yolo_bbox[0] + last_yolo_bbox[2]) // 2
+            cy_yolo  = (last_yolo_bbox[1] + last_yolo_bbox[3]) // 2
+
+            # Max allowed drift = 1.5x the object's width
+            obj_w    = last_yolo_bbox[2] - last_yolo_bbox[0]
+            obj_h    = last_yolo_bbox[3] - last_yolo_bbox[1]
+            max_drift = max(obj_w, obj_h) * 1.5
+
+            drift = ((cx_csrt - cx_yolo) ** 2 + (cy_csrt - cy_yolo) ** 2) ** 0.5
+            if drift > max_drift:
+                return False
+
+        return True
+
     # ── Main tracking ─────────────────────────────────────────────────────
 
     def process_video(self, video_path, target_bbox,
                       progress_callback=None, frame_callback=None,
                       stop_event=None, frame_skip=3, start_frame=0):
         """
-        Tracks target_bbox across the video using YOLO ByteTrack + frame skipping.
+        YOLO + CSRT Hybrid Tracker (Validated):
 
-        frame_skip  : Run YOLO only every N frames. Skipped frames reuse the
-                      last known / linearly-extrapolated bbox — making processing
-                      ~N× faster while keeping accuracy high for slow/normal
-                      moving objects (default = 2).
+        - CSRT runs every frame for smooth tracking
+        - YOLO runs every N frames as ground truth verifier
+        - CSRT is only trusted when:
+            a) YOLO confirmed object recently (within frame_skip frames)
+            b) CSRT hasn't drifted far from last YOLO position
+        - If CSRT fails validation → treated same as CSRT lost
+        - Both YOLO and validated CSRT lost → miss streak increments
+        - miss streak >= MISS_PATIENCE → disappearance declared
 
-        MISS_PATIENCE : Number of *processed* (YOLO-checked) frames with no
-                        detection before declaring disappearance.
-        EDGE_PATIENCE : Processed frames where bbox is only at edge before exit.
+        MISS_PATIENCE   : YOLO frames with no detection before disappearance
+        EDGE_PATIENCE   : Frames at edge before declaring exit
+        CSRT_REINIT_IOU : Min IoU between CSRT and YOLO before reinit
+        CSRT_MAX_SOLO   : Max frames CSRT can track alone without YOLO confirmation
         """
 
-        MISS_PATIENCE = 30
-        EDGE_PATIENCE = 5
+        MISS_PATIENCE   = 30
+        EDGE_PATIENCE   = 5
+        CSRT_REINIT_IOU = 0.3
+        CSRT_MAX_SOLO   = frame_skip * 2  # trust CSRT for max 2 YOLO cycles
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -102,23 +167,23 @@ class Tracker:
         if start_frame > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
+        # ── Frame 0: Lock onto YOLO track ID + init CSRT ─────────────────
         ret, frame = cap.read()
         if not ret:
             cap.release()
             return {"error": "Could not read video."}
 
         first_frame_bgr = frame.copy()
-        pf0 = cv2.resize(frame, (proc_w, proc_h))
-
-        res0 = self.model.track(pf0, persist=True, verbose=False)
+        pf0             = cv2.resize(frame, (proc_w, proc_h))
+        res0            = self.model.track(pf0, persist=True, verbose=False)
 
         target_track_id = None
         target_class_id = None
         current_xyxy    = (sx1, sy1, sx2, sy2)
 
         if res0 and res0[0].boxes is not None and len(res0[0].boxes):
-            user_cx = (sx1 + sx2) // 2
-            user_cy = (sy1 + sy2) // 2
+            user_cx    = (sx1 + sx2) // 2
+            user_cy    = (sy1 + sy2) // 2
             best_iou   = -1.0
             best_cdist = float('inf')
             best_box   = None
@@ -138,8 +203,16 @@ class Tracker:
                 if best_box.id is not None:
                     target_track_id = int(best_box.id[0].item())
                 current_xyxy = (bx1, by1, bx2, by2)
-                print(f"[Frame 0] Locked → track_id={target_track_id}, "
+                print(f"[Frame 0] YOLO locked → track_id={target_track_id}, "
                       f"class={res0[0].names[target_class_id]} (IoU={best_iou:.2f})")
+
+        # ── Init CSRT on frame 0 ──────────────────────────────────────────
+        csrt              = self._init_csrt(pf0, current_xyxy)
+        csrt_bbox         = current_xyxy
+        last_yolo_bbox    = current_xyxy   # last position YOLO confirmed
+        frames_since_yolo = 0              # frames since YOLO last confirmed
+
+        print(f"[Frame 0] CSRT initialized on bbox={current_xyxy}")
 
         edge_margin = max(5, int(min(proc_w, proc_h) * 0.015))
 
@@ -153,8 +226,8 @@ class Tracker:
                     abs((b1[1] + b1[3]) // 2 - (b2[1] + b2[3]) // 2))
 
         prev_xyxy = current_xyxy
-        vel_x = 0
-        vel_y = 0
+        vel_x     = 0
+        vel_y     = 0
 
         frame_idx               = start_frame + 1
         disappeared             = False
@@ -162,6 +235,7 @@ class Tracker:
         miss_streak             = 0
         edge_streak             = 0
 
+        # ── Per-frame loop ────────────────────────────────────────────────
         while cap.isOpened():
             if stop_event is not None and stop_event.is_set():
                 cap.release()
@@ -172,10 +246,27 @@ class Tracker:
                 break
 
             current_bgr = frame.copy()
-            run_yolo = (frame_idx % frame_skip == 0)
+            pf          = cv2.resize(frame, (proc_w, proc_h))
+            run_yolo    = (frame_idx % frame_skip == 0)
 
+            # ── CSRT: runs every frame ────────────────────────────────────
+            csrt_result = self._csrt_update(csrt, pf)
+
+            if csrt_result is not None:
+                csrt_bbox = csrt_result
+
+            # ── Validate CSRT before trusting it ─────────────────────────
+            frames_since_yolo += 1
+            csrt_trusted = (
+                csrt_result is not None and
+                self._csrt_still_valid(
+                    csrt_bbox, last_yolo_bbox,
+                    frames_since_yolo, CSRT_MAX_SOLO
+                )
+            )
+
+            # ── YOLO: runs every N frames ─────────────────────────────────
             if run_yolo:
-                pf = cv2.resize(frame, (proc_w, proc_h))
                 res = self.model.track(pf, persist=True, verbose=False)
 
                 found_xyxy      = None
@@ -200,8 +291,20 @@ class Tracker:
                         found_xyxy = min(same_class_dets,
                                          key=lambda b: _cdist(b, current_xyxy))
 
+                # ── YOLO found object ─────────────────────────────────────
                 if found_xyxy is not None:
-                    miss_streak = 0
+                    miss_streak       = 0
+                    last_yolo_bbox    = found_xyxy  # update last confirmed YOLO pos
+                    frames_since_yolo = 0           # reset counter
+
+                    # Check if CSRT drifted from YOLO
+                    iou_check = self.calculate_iou(csrt_bbox, found_xyxy)
+                    if iou_check < CSRT_REINIT_IOU:
+                        print(f"[Frame {frame_idx}] CSRT drifted "
+                              f"(IoU={iou_check:.2f}), reinit on YOLO bbox")
+                        csrt      = self._init_csrt(pf, found_xyxy)
+                        csrt_bbox = found_xyxy
+
                     vel_x = ((found_xyxy[0] + found_xyxy[2]) // 2 -
                              (prev_xyxy[0] + prev_xyxy[2]) // 2) // frame_skip
                     vel_y = ((found_xyxy[1] + found_xyxy[3]) // 2 -
@@ -214,10 +317,12 @@ class Tracker:
                     if _at_edge(found_xyxy):
                         interior = [b for b in same_class_dets if not _at_edge(b)]
                         if interior:
-                            found_xyxy = min(interior,
-                                             key=lambda b: _cdist(b, current_xyxy))
+                            found_xyxy   = min(interior,
+                                               key=lambda b: _cdist(b, current_xyxy))
                             current_xyxy = found_xyxy
                             bx1, by1, bx2, by2 = found_xyxy
+                            csrt      = self._init_csrt(pf, found_xyxy)
+                            csrt_bbox = found_xyxy
                             edge_streak = 0
                         else:
                             edge_streak += 1
@@ -228,16 +333,28 @@ class Tracker:
                     else:
                         edge_streak = 0
 
+                # ── YOLO lost object ──────────────────────────────────────
                 else:
-                    miss_streak += 1
-                    edge_streak  = 0
-                    if miss_streak >= MISS_PATIENCE:
-                        disappeared             = True
-                        disappearance_frame_idx = frame_idx
-                        break
+                    if csrt_trusted:
+                        # CSRT validated — trust it, don't count as miss
+                        print(f"[Frame {frame_idx}] YOLO lost, "
+                              f"CSRT validated at {csrt_bbox}")
+                        current_xyxy = csrt_bbox
+                    else:
+                        # YOLO lost + CSRT not trusted = real miss
+                        miss_streak += 1
+                        edge_streak  = 0
+                        if miss_streak >= MISS_PATIENCE:
+                            disappeared             = True
+                            disappearance_frame_idx = frame_idx
+                            break
 
+            # ── Non-YOLO frames: use validated CSRT ──────────────────────
             else:
-                if miss_streak == 0:
+                if csrt_trusted:
+                    current_xyxy = csrt_bbox
+                elif miss_streak == 0:
+                    # CSRT not trusted — fall back to velocity extrapolation
                     w = current_xyxy[2] - current_xyxy[0]
                     h = current_xyxy[3] - current_xyxy[1]
                     cx = (current_xyxy[0] + current_xyxy[2]) // 2 + vel_x
@@ -247,9 +364,10 @@ class Tracker:
                     current_xyxy = (cx - w // 2, cy - h // 2,
                                     cx + w // 2, cy + h // 2)
 
+            # ── Live feed callback ────────────────────────────────────────
             if frame_callback and run_yolo:
                 frame_rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
-                if miss_streak > 0:
+                if miss_streak > 0 and not csrt_trusted:
                     frame_callback(frame_rgb, None)
                 else:
                     bx1, by1, bx2, by2 = current_xyxy
@@ -261,11 +379,13 @@ class Tracker:
             if progress_callback and (frame_idx % 10 == 0 or run_yolo):
                 progress_callback(frame_idx, total_frames)
 
+        # ── Handle disappearance at video end ─────────────────────────────
         MIN_END_MISS = 5
         if not disappeared and miss_streak >= MIN_END_MISS:
-            disappeared = True
+            disappeared             = True
             disappearance_frame_idx = frame_idx - (miss_streak * frame_skip)
 
+        # ── Build result dict ─────────────────────────────────────────────
         res_dict = {'disappeared': disappeared, 'last_frame_idx': frame_idx - 1}
 
         if disappeared:
@@ -278,7 +398,6 @@ class Tracker:
                                         module="torch.utils.data.dataloader")
                 h, w, _ = current_bgr.shape
                 crop    = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
-                # ── Load EasyOCR from AppData directory ──
                 reader  = easyocr.Reader(
                     ['en'],
                     gpu=False,
