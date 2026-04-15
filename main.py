@@ -9,6 +9,33 @@ from datetime import datetime
 
 
 # ─────────────────────────────────────────
+#  ICON HELPER
+# ─────────────────────────────────────────
+# icon.ico sits next to main.py (and inside the PyInstaller bundle via
+# sys._MEIPASS), so we resolve it at import time.
+def _get_icon_path():
+    import sys
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'icon.ico')
+
+def _apply_icon(win):
+    """Set icon.ico on any Tk or Toplevel window, silently ignoring errors."""
+    try:
+        win.iconbitmap(_get_icon_path())
+    except Exception:
+        pass
+
+def _set_appusermodelid():
+    """Pin the taskbar icon to Detectra (Windows only).
+    Must be called before the first Tk() is created."""
+    try:
+        from ctypes import windll
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID('Detectra.App')
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────
 #  SPLASH SCREEN
 # ─────────────────────────────────────────
 class SplashScreen:
@@ -17,6 +44,7 @@ class SplashScreen:
         self.root.overrideredirect(True)
         self.root.configure(bg="#1E1E2E")
         self.root.attributes('-topmost', True)
+        _apply_icon(self.root)
 
         w, h = 480, 280
         self.root.update_idletasks()   # ← add this line
@@ -86,7 +114,9 @@ class SplashScreen:
     def _open_main_app(self):
         """Runs on main thread — safe to create new Tk window."""
         self.root.destroy()                        # close splash
+        _set_appusermodelid()
         root = tk.Tk()                             # open main window
+        _apply_icon(root)
         try:
             from ctypes import windll
             windll.shcore.SetProcessDpiAwareness(1)
@@ -104,6 +134,7 @@ class DetectraApp:
         self.root = root
         self.root.title("Detectra - Object Disappearance Detection")
         self.root.geometry("1000x700")
+        _apply_icon(self.root)
 
         # Core state
         self.video_path = None
@@ -129,6 +160,11 @@ class DetectraApp:
         self.current_frame_idx = 0
         self.last_shown_frame_rgb = None
         self.last_results = None
+        # Smooth playback: holds the newest pending frame so we never queue
+        # more than one GUI update at a time.
+        self._pending_frame = None   # (frame_rgb, bbox) | None
+        self._frame_scheduled = False
+        self._results_win = None        # live reference to results Toplevel
 
         self.apply_theme()
         self.setup_ui()
@@ -407,6 +443,25 @@ class DetectraApp:
         self.draw_frame(frame_rgb, bbox)
         self.root.update_idletasks()
 
+    # ── Smooth playback helpers ───────────────────────────────────────────
+
+    def _on_new_frame(self, frame_rgb, bbox):
+        """Called from the tracker thread. Only schedules ONE Tkinter update;
+        newer frames overwrite the pending slot so the GUI always shows the
+        latest frame rather than playing catch-up on a stale backlog."""
+        self._pending_frame = (frame_rgb, bbox)
+        if not self._frame_scheduled:
+            self._frame_scheduled = True
+            self.root.after(0, self._flush_pending_frame)
+
+    def _flush_pending_frame(self):
+        """Runs on the main thread. Draws whatever the latest frame is."""
+        self._frame_scheduled = False
+        if self._pending_frame is not None:
+            frame_rgb, bbox = self._pending_frame
+            self._pending_frame = None
+            self.live_view_callback(frame_rgb, bbox)
+
     def start_tracking(self):
         if not self.video_path or not self.selected_bbox:
             return
@@ -466,7 +521,25 @@ class DetectraApp:
             self.root.after(0, self.update_progress, current, total)
 
         def frame_cb(frame_rgb, bbox):
-            self.root.after(0, self.live_view_callback, frame_rgb, bbox)
+            # Use the smooth pending-frame guard instead of direct after()
+            # so fast speeds don't build a backlog of stale frames in the queue.
+            self._on_new_frame(frame_rgb, bbox)
+
+        def disappearance_cb(frame_before_bgr, frame_after_bgr, frame_idx):
+            """Fired immediately when disappearance is detected, before OCR.
+            Opens the results window right away with the before/after frames."""
+            import cv2 as _cv2
+            from datetime import timedelta as _td
+            fps_val = self.tracker._last_fps if hasattr(self.tracker, '_last_fps') else 25.0
+            seconds = int(frame_idx / fps_val)
+            early_results = {
+                'disappeared'  : True,
+                'last_frame_idx': frame_idx,
+                'timestamp'    : str(_td(seconds=seconds)),
+                'frame_before' : frame_before_bgr,
+                'frame_after'  : frame_after_bgr,
+            }
+            self.root.after(0, self._on_disappearance_detected, early_results)
 
         callback_to_pass = frame_cb if self.show_tracking_var.get() else None
         frame_skip = int(self.speed_var.get())
@@ -476,13 +549,28 @@ class DetectraApp:
             progress_cb, callback_to_pass,
             stop_event=self.stop_event,
             frame_skip=frame_skip,
-            start_frame=self.current_frame_idx
+            start_frame=self.current_frame_idx,
+            disappearance_callback=disappearance_cb
         )
         self.root.after(0, self.on_tracking_complete, results)
 
     def view_last_results(self):
         if self.last_results:
             self.show_results_window(self.last_results)
+
+    def _on_disappearance_detected(self, early_results):
+        """Called immediately when disappearance is first detected.
+        Shows the alert and opens the results window without waiting for OCR."""
+        self.last_results = early_results
+        self.results_btn.pack(side=tk.RIGHT)
+        self.status_lbl.config(text="⚠️  Disappearance detected!")
+        timestamp_text = early_results.get('timestamp_ocr', early_results['timestamp'])
+        self.info_lbl.config(
+            text=f"Object disappeared at: {timestamp_text}\n"
+                 f"OCR timestamp extraction in progress...",
+            foreground="red")
+        # Open results window immediately — it will be updated with OCR later
+        self._results_win = self.show_results_window(early_results)
 
     def on_tracking_complete(self, results):
         self.start_btn.config(state=tk.NORMAL)
@@ -513,15 +601,24 @@ class DetectraApp:
             return
 
         if results.get("disappeared"):
+            # Update last_results with the final data (may now include OCR timestamp)
             self.last_results = results
             self.results_btn.pack(side=tk.RIGHT)
-            self.status_lbl.config(text="Disappearance detected!")
+            self.status_lbl.config(text="⚠️  Disappearance detected!")
             timestamp_text = results.get('timestamp_ocr', results['timestamp'])
             self.info_lbl.config(
                 text=f"Object disappeared at: {timestamp_text}\n"
                      f"Click 'Show Last Results' to export snapshots.",
                 foreground="red")
-            self.show_results_window(results)
+            # If the results window is already open (opened by _on_disappearance_detected),
+            # just refresh its timestamp label with the final OCR value.
+            # If it was closed by the user, open a new one.
+            win = self._results_win
+            if win is not None and win.winfo_exists():
+                if hasattr(win, '_timestamp_var'):
+                    win._timestamp_var.set(f"Time of Disappearance:\n{timestamp_text}")
+            else:
+                self._results_win = self.show_results_window(results)
         else:
             self.status_lbl.config(text="Tracking finished. Object never disappeared.")
             self.info_lbl.config(
@@ -533,11 +630,16 @@ class DetectraApp:
         res_win.geometry("800x450")
         res_win.minsize(600, 350)
         res_win.configure(bg="#1E1E2E")
+        _apply_icon(res_win)
 
         timestamp_text = results.get('timestamp_ocr', results['timestamp'])
 
+        # Store as StringVar on the window so on_tracking_complete can update
+        # it later when OCR finishes (without opening a second window).
+        res_win._timestamp_var = tk.StringVar(
+            value=f"Time of Disappearance:\n{timestamp_text}")
         ttk.Label(res_win,
-                  text=f"Time of Disappearance: \n{timestamp_text}",
+                  textvariable=res_win._timestamp_var,
                   font=("Segoe UI", 22, "bold"),
                   justify="center", anchor="center").pack(pady=15)
 
@@ -590,6 +692,7 @@ class DetectraApp:
             res_win.resize_timer = res_win.after(100, lambda: resize_images(event))
 
         frames_frame.bind("<Configure>", on_resize)
+        return res_win
 
     def export_results(self, results):
         initial_dir = str(Path.home() / "Documents")
@@ -627,6 +730,8 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+        _set_appusermodelid()
         root = tk.Tk()
+        _apply_icon(root)
         SplashScreen(root)
         root.mainloop()

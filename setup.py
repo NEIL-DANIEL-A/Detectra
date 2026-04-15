@@ -5,6 +5,30 @@ import requests
 import os
 import zipfile
 from pathlib import Path
+import sys
+
+
+# ─────────────────────────────────────────
+#  ICON HELPER  (shared with main.py)
+# ─────────────────────────────────────────
+def _get_icon_path():
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'icon.ico')
+
+def _apply_icon(win):
+    """Set icon.ico on any Tk / Toplevel window, silently ignoring errors."""
+    try:
+        win.iconbitmap(_get_icon_path())
+    except Exception:
+        pass
+
+def _set_appusermodelid():
+    """Pin the taskbar icon to Detectra (Windows only)."""
+    try:
+        from ctypes import windll
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID('Detectra.App')
+    except Exception:
+        pass
 
 # ─────────────────────────────────────────
 #  PATHS
@@ -48,8 +72,10 @@ DOWNLOADS = [
 # ─────────────────────────────────────────
 class SetupScreen:
     def __init__(self):
+        _set_appusermodelid()
         self.root = tk.Tk()
         self.root.title("Detectra — First Time Setup")
+        _apply_icon(self.root)
         self.root.geometry("560x520")
         self.root.resizable(False, False)
         self.root.configure(bg="#1E1E2E")

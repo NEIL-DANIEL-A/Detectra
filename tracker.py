@@ -119,7 +119,8 @@ class Tracker:
 
     def process_video(self, video_path, target_bbox,
                       progress_callback=None, frame_callback=None,
-                      stop_event=None, frame_skip=3, start_frame=0):
+                      stop_event=None, frame_skip=3, start_frame=0,
+                      disappearance_callback=None):
         """
         YOLO + CSRT Hybrid Tracker (Validated):
 
@@ -138,16 +139,20 @@ class Tracker:
         CSRT_MAX_SOLO   : Max frames CSRT can track alone without YOLO confirmation
         """
 
-        MISS_PATIENCE   = 30
+        # MISS_PATIENCE is in sampled-frame units (one per seek step).
+        # We want roughly the same real-frame tolerance regardless of speed,
+        # so divide the raw-frame budget (30) by frame_skip.
+        MISS_PATIENCE   = max(5, 30 // frame_skip)
         EDGE_PATIENCE   = 5
         CSRT_REINIT_IOU = 0.3
-        CSRT_MAX_SOLO   = frame_skip * 2  # trust CSRT for max 2 YOLO cycles
+        CSRT_MAX_SOLO   = 2   # sampled frames: CSRT trusted for 2 steps after YOLO
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             return {"error": "Could not open video."}
 
         fps          = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        self._last_fps = fps  # exposed so disappearance_callback can use it
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         orig_w       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -236,6 +241,10 @@ class Tracker:
         edge_streak             = 0
 
         # ── Per-frame loop ────────────────────────────────────────────────
+        # Speed is implemented by physically seeking ahead frame_skip frames
+        # each iteration so the decoder never touches skipped frames.
+        # CSRT also runs only on the sampled frame — since YOLO reinits CSRT
+        # whenever it drifts, single-frame CSRT updates are still valid.
         while cap.isOpened():
             if stop_event is not None and stop_event.is_set():
                 cap.release()
@@ -247,9 +256,9 @@ class Tracker:
 
             current_bgr = frame.copy()
             pf          = cv2.resize(frame, (proc_w, proc_h))
-            run_yolo    = (frame_idx % frame_skip == 0)
+            run_yolo    = True   # every sampled frame runs YOLO
 
-            # ── CSRT: runs every frame ────────────────────────────────────
+            # ── CSRT: update on this sampled frame ───────────────────────
             csrt_result = self._csrt_update(csrt, pf)
 
             if csrt_result is not None:
@@ -329,6 +338,8 @@ class Tracker:
                             if edge_streak >= EDGE_PATIENCE:
                                 disappeared             = True
                                 disappearance_frame_idx = frame_idx
+                                if disappearance_callback:
+                                    disappearance_callback(first_frame_bgr, current_bgr, frame_idx)
                                 break
                     else:
                         edge_streak = 0
@@ -347,25 +358,15 @@ class Tracker:
                         if miss_streak >= MISS_PATIENCE:
                             disappeared             = True
                             disappearance_frame_idx = frame_idx
+                            if disappearance_callback:
+                                disappearance_callback(first_frame_bgr, current_bgr, frame_idx)
                             break
 
-            # ── Non-YOLO frames: use validated CSRT ──────────────────────
-            else:
-                if csrt_trusted:
-                    current_xyxy = csrt_bbox
-                elif miss_streak == 0:
-                    # CSRT not trusted — fall back to velocity extrapolation
-                    w = current_xyxy[2] - current_xyxy[0]
-                    h = current_xyxy[3] - current_xyxy[1]
-                    cx = (current_xyxy[0] + current_xyxy[2]) // 2 + vel_x
-                    cy = (current_xyxy[1] + current_xyxy[3]) // 2 + vel_y
-                    cx = max(w // 2, min(proc_w - w // 2, cx))
-                    cy = max(h // 2, min(proc_h - h // 2, cy))
-                    current_xyxy = (cx - w // 2, cy - h // 2,
-                                    cx + w // 2, cy + h // 2)
+            # (Non-YOLO frame branch removed — every sampled frame now runs
+            # YOLO. Speed is controlled by seeking, not by skipping YOLO.)
 
             # ── Live feed callback ────────────────────────────────────────
-            if frame_callback and run_yolo:
+            if frame_callback:
                 frame_rgb = cv2.cvtColor(current_bgr, cv2.COLOR_BGR2RGB)
                 if miss_streak > 0 and not csrt_trusted:
                     frame_callback(frame_rgb, None)
@@ -375,9 +376,17 @@ class Tracker:
                     ox2, oy2 = int(bx2 / scale), int(by2 / scale)
                     frame_callback(frame_rgb, (ox1, oy1, ox2, oy2))
 
-            frame_idx += 1
-            if progress_callback and (frame_idx % 10 == 0 or run_yolo):
+            frame_idx += frame_skip   # advance logical frame counter by skip amount
+            if progress_callback and frame_idx % max(10, frame_skip) == 0:
                 progress_callback(frame_idx, total_frames)
+
+            # ── Physical seek: jump ahead frame_skip frames in the video ─
+            # This is what actually makes higher speeds faster — the decoder
+            # skips frame_skip-1 frames entirely instead of decoding them.
+            if frame_skip > 1:
+                next_pos = frame_idx
+                if next_pos < total_frames:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, next_pos)
 
         # ── Handle disappearance at video end ─────────────────────────────
         MIN_END_MISS = 5
