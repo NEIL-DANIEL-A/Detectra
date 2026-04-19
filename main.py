@@ -162,8 +162,10 @@ class DetectraApp:
         self.last_results = None
         # Smooth playback: holds the newest pending frame so we never queue
         # more than one GUI update at a time.
-        self._pending_frame = None   # (frame_rgb, bbox) | None
+        self._pending_frame = None     # (frame_rgb, bbox) | None
         self._frame_scheduled = False
+        self._pending_progress = None   # (current, total) | None
+        self._progress_scheduled = False
         self._results_win = None        # live reference to results Toplevel
 
         self.apply_theme()
@@ -439,6 +441,22 @@ class DetectraApp:
         self.progress_var.set(pct)
         self.root.update_idletasks()
 
+    def _on_progress(self, current, total):
+        """Thread-safe progress update with pending-guard.
+        Only one update is ever queued; newer values overwrite the slot
+        so the bar always reflects the latest position, never a stale backlog."""
+        self._pending_progress = (current, total)
+        if not self._progress_scheduled:
+            self._progress_scheduled = True
+            self.root.after(0, self._flush_pending_progress)
+
+    def _flush_pending_progress(self):
+        self._progress_scheduled = False
+        if self._pending_progress is not None:
+            current, total = self._pending_progress
+            self._pending_progress = None
+            self.update_progress(current, total)
+
     def live_view_callback(self, frame_rgb, bbox):
         self.draw_frame(frame_rgb, bbox)
         self.root.update_idletasks()
@@ -518,7 +536,7 @@ class DetectraApp:
     def run_tracker_thread(self):
         def progress_cb(current, total):
             self.total_frames_est = total
-            self.root.after(0, self.update_progress, current, total)
+            self._on_progress(current, total)
 
         def frame_cb(frame_rgb, bbox):
             # Use the smooth pending-frame guard instead of direct after()

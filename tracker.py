@@ -377,8 +377,16 @@ class Tracker:
                     frame_callback(frame_rgb, (ox1, oy1, ox2, oy2))
 
             frame_idx += frame_skip   # advance logical frame counter by skip amount
-            if progress_callback and frame_idx % max(10, frame_skip) == 0:
-                progress_callback(frame_idx, total_frames)
+
+            # ── Progress callback: fire at most every 1% of total frames ──
+            # Using a fixed modulo on frame_idx caused a backlog in root.after()
+            # at high speeds (frame_skip % frame_skip == 0 is always true).
+            # Instead we compute a step size = 1% of total and only fire when
+            # we cross a new 1% boundary.
+            if progress_callback:
+                _step = max(frame_skip, int(total_frames * 0.01))
+                if frame_idx % _step < frame_skip:
+                    progress_callback(frame_idx, total_frames)
 
             # ── Physical seek: jump ahead frame_skip frames in the video ─
             # This is what actually makes higher speeds faster — the decoder
