@@ -98,6 +98,8 @@ class SplashScreen:
         try:
             from tracker import Tracker
             self.tracker = Tracker()
+            self._update(70, "Initializing OCR...")
+            self.tracker.init_ocr()
         except Exception as e:
             self.root.after(0, lambda: self.status_var.set(f"Error: {e}"))
             return
@@ -664,8 +666,14 @@ class DetectraApp:
             text=f"Object disappeared at: {timestamp_text}\n"
                  f"OCR timestamp extraction in progress...",
             foreground="red")
-        # Open results window immediately — it will be updated with OCR later
-        self._results_win = self.show_results_window(early_results)
+        
+        # Only open if not already open (prevent double window at high speeds)
+        if self._results_win is None or not self._results_win.winfo_exists():
+            self._results_win = self.show_results_window(early_results)
+        else:
+            # If already open, just update its current timestamp
+            if hasattr(self._results_win, '_timestamp_var'):
+                self._results_win._timestamp_var.set(f"Time of Disappearance:\n{timestamp_text}")
 
     def on_tracking_complete(self, results):
         self.start_btn.config(state=tk.NORMAL)

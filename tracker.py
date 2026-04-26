@@ -18,6 +18,19 @@ class Tracker:
     def __init__(self):
         model_path = str(MODELS_DIR / "yolov8n.pt")
         self.model = YOLO(model_path)
+        self.reader = None  # Loaded on demand or in splash screen to save memory
+
+    def init_ocr(self):
+        """Initialize EasyOCR reader. Takes ~1-2 seconds."""
+        import easyocr, warnings
+        warnings.filterwarnings("ignore", category=UserWarning,
+                                module="torch.utils.data.dataloader")
+        self.reader = easyocr.Reader(
+            ['en'],
+            gpu=False,
+            verbose=False,
+            model_storage_directory=str(EASYOCR_DIR)
+        )
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -464,9 +477,9 @@ class Tracker:
             res_dict['frame_after_with_path'] = self._draw_path(current_bgr, path_history)
 
             try:
-                import easyocr, warnings
-                warnings.filterwarnings("ignore", category=UserWarning,
-                                        module="torch.utils.data.dataloader")
+                if self.reader is None:
+                    self.init_ocr()
+                
                 h, w, _ = current_bgr.shape
                 # ── Use user-defined OCR region if provided, else default ─
                 if ocr_bbox is not None:
@@ -474,13 +487,8 @@ class Tracker:
                     crop = current_bgr[oy1:oy2, ox1:ox2]
                 else:
                     crop = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
-                reader  = easyocr.Reader(
-                    ['en'],
-                    gpu=False,
-                    verbose=False,
-                    model_storage_directory=str(EASYOCR_DIR)
-                )
-                ocr_txt = " ".join(reader.readtext(crop, detail=0)).strip()
+                
+                ocr_txt = " ".join(self.reader.readtext(crop, detail=0)).strip()
                 if ocr_txt:
                     res_dict['timestamp_ocr'] = ocr_txt
             except Exception as e:
