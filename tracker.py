@@ -115,12 +115,49 @@ class Tracker:
 
         return True
 
+    # ── Path Visualization ────────────────────────────────────────────────
+
+    def _draw_path(self, frame_bgr, path_history):
+        """Overlay a breadcrumb trail on a copy of frame_bgr.
+
+        path_history : list of (cx, cy) tuples in original-resolution coords.
+        Returns a new annotated BGR frame (or a plain copy if < 2 points).
+        """
+        out = frame_bgr.copy()
+        if len(path_history) < 2:
+            return out
+
+        pts = [(int(x), int(y)) for x, y in path_history]
+
+        # ── Semi-transparent polyline (bright yellow in BGR) ──────────────
+        overlay = out.copy()
+        for i in range(1, len(pts)):
+            cv2.line(overlay, pts[i - 1], pts[i], (0, 230, 230), 3)
+        cv2.addWeighted(overlay, 0.65, out, 0.35, 0, out)
+
+        # ── Intermediate dots ─────────────────────────────────────────────
+        for pt in pts[1:-1]:
+            cv2.circle(out, pt, 4, (0, 230, 230), -1)
+            cv2.circle(out, pt, 4, (255, 255, 255), 1)
+
+        # ── Start marker — green ──────────────────────────────────────────
+        cv2.circle(out, pts[0], 11, (0, 200, 60), -1)
+        cv2.circle(out, pts[0], 11, (255, 255, 255), 2)
+        cv2.circle(out, pts[0],  4, (255, 255, 255), -1)
+
+        # ── End / last-seen marker — red ──────────────────────────────────
+        cv2.circle(out, pts[-1], 11, (0, 0, 220), -1)
+        cv2.circle(out, pts[-1], 11, (255, 255, 255), 2)
+        cv2.circle(out, pts[-1],  4, (255, 255, 255), -1)
+
+        return out
+
     # ── Main tracking ─────────────────────────────────────────────────────
 
     def process_video(self, video_path, target_bbox,
                       progress_callback=None, frame_callback=None,
                       stop_event=None, frame_skip=3, start_frame=0,
-                      disappearance_callback=None):
+                      disappearance_callback=None, ocr_bbox=None):
         """
         YOLO + CSRT Hybrid Tracker (Validated):
 
@@ -218,6 +255,12 @@ class Tracker:
         frames_since_yolo = 0              # frames since YOLO last confirmed
 
         print(f"[Frame 0] CSRT initialized on bbox={current_xyxy}")
+
+        # ── Path history: (cx, cy) in original-resolution coords ─────────
+        path_history = []
+        _cx0 = (current_xyxy[0] + current_xyxy[2]) // 2
+        _cy0 = (current_xyxy[1] + current_xyxy[3]) // 2
+        path_history.append((int(_cx0 / scale), int(_cy0 / scale)))
 
         edge_margin = max(5, int(min(proc_w, proc_h) * 0.015))
 
@@ -339,7 +382,8 @@ class Tracker:
                                 disappeared             = True
                                 disappearance_frame_idx = frame_idx
                                 if disappearance_callback:
-                                    disappearance_callback(first_frame_bgr, current_bgr, frame_idx)
+                                    _pf = self._draw_path(current_bgr, path_history)
+                                    disappearance_callback(first_frame_bgr, current_bgr, frame_idx, _pf)
                                 break
                     else:
                         edge_streak = 0
@@ -359,11 +403,18 @@ class Tracker:
                             disappeared             = True
                             disappearance_frame_idx = frame_idx
                             if disappearance_callback:
-                                disappearance_callback(first_frame_bgr, current_bgr, frame_idx)
+                                _pf = self._draw_path(current_bgr, path_history)
+                                disappearance_callback(first_frame_bgr, current_bgr, frame_idx, _pf)
                             break
 
             # (Non-YOLO frame branch removed — every sampled frame now runs
             # YOLO. Speed is controlled by seeking, not by skipping YOLO.)
+
+            # ── Record path history (object confirmed this frame) ─────────
+            if miss_streak == 0 or csrt_trusted:
+                _pcx = (current_xyxy[0] + current_xyxy[2]) // 2
+                _pcy = (current_xyxy[1] + current_xyxy[3]) // 2
+                path_history.append((int(_pcx / scale), int(_pcy / scale)))
 
             # ── Live feed callback ────────────────────────────────────────
             if frame_callback:
@@ -409,12 +460,20 @@ class Tracker:
             seconds               = int(disappearance_frame_idx / fps)
             res_dict['timestamp'] = str(timedelta(seconds=seconds))
 
+            # ── Path-annotated frame ──────────────────────────────────────
+            res_dict['frame_after_with_path'] = self._draw_path(current_bgr, path_history)
+
             try:
                 import easyocr, warnings
                 warnings.filterwarnings("ignore", category=UserWarning,
                                         module="torch.utils.data.dataloader")
                 h, w, _ = current_bgr.shape
-                crop    = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
+                # ── Use user-defined OCR region if provided, else default ─
+                if ocr_bbox is not None:
+                    ox1, oy1, ox2, oy2 = ocr_bbox
+                    crop = current_bgr[oy1:oy2, ox1:ox2]
+                else:
+                    crop = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
                 reader  = easyocr.Reader(
                     ['en'],
                     gpu=False,

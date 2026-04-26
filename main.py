@@ -153,7 +153,10 @@ class DetectraApp:
         # Drawing state
         self.rect_start_x = None
         self.rect_start_y = None
-        self.rect_id = None
+        self.rect_id      = None
+        self.ocr_rect_id  = None          # amber OCR-region box drawn on canvas
+        self._drawing_mode = 'object'     # 'object' | 'ocr'
+        self.ocr_bbox     = None          # (x1,y1,x2,y2) in image coords for OCR crop
         self.resize_timer = None
         self.stop_event = None
         self.is_paused = False
@@ -270,14 +273,23 @@ class DetectraApp:
                                                   variable=self.show_tracking_var)
         self.show_tracking_chk.pack(side=tk.LEFT)
 
+        self.ocr_btn = ttk.Button(self.options_frame, text="📍 Set OCR Region",
+                                  command=self.start_ocr_selection)
+        self.ocr_btn.pack(side=tk.LEFT, padx=(15, 0))
+        self.ocr_btn.pack_forget()  # hidden until video is loaded
+
+        self.ocr_region_lbl = ttk.Label(self.options_frame, text="",
+                                        font=('Segoe UI', 10))
+        self.ocr_region_lbl.pack(side=tk.LEFT, padx=(6, 0))
+
         ttk.Label(self.options_frame, text="Speed:",
                   font=('Segoe UI', 11)).pack(side=tk.LEFT, padx=(20, 4))
-        self.speed_var = tk.IntVar(value=2)
-        self.speed_slider = ttk.Scale(self.options_frame, from_=1, to=10,
+        self.speed_var = tk.IntVar(value=5)
+        self.speed_slider = ttk.Scale(self.options_frame, from_=1, to=30,
                                       orient=tk.HORIZONTAL, variable=self.speed_var,
                                       length=140, command=self._on_speed_change)
         self.speed_slider.pack(side=tk.LEFT)
-        self.speed_lbl = ttk.Label(self.options_frame, text="2x",
+        self.speed_lbl = ttk.Label(self.options_frame, text="5x",
                                    font=('Segoe UI', 12, 'bold'), width=4)
         self.speed_lbl.pack(side=tk.LEFT, padx=(4, 0))
 
@@ -293,6 +305,17 @@ class DetectraApp:
     def _on_speed_change(self, _=None):
         v = int(self.speed_var.get())
         self.speed_lbl.config(text=f"{v}x")
+
+    def start_ocr_selection(self):
+        """Switch canvas to OCR-region draw mode."""
+        self._drawing_mode = 'ocr'
+        # Clear any previous OCR rect visual
+        if self.ocr_rect_id:
+            self.canvas.delete(self.ocr_rect_id)
+            self.ocr_rect_id = None
+        self.status_lbl.config(
+            text="Draw a box around the on-screen timestamp/clock for OCR.")
+        self.ocr_region_lbl.config(text="Drawing...", foreground="#FAB387")
 
     def on_resize(self, event):
         if self.resize_timer is not None:
@@ -310,6 +333,14 @@ class DetectraApp:
                 cy2 = int(y2 * self.scale_factor) + self.y_offset
                 self.rect_id = self.canvas.create_rectangle(
                     cx1, cy1, cx2, cy2, outline='#00FF00', width=2)
+            if self.ocr_bbox:
+                ox1, oy1, ox2, oy2 = self.ocr_bbox
+                ocx1 = int(ox1 * self.scale_factor) + self.x_offset
+                ocy1 = int(oy1 * self.scale_factor) + self.y_offset
+                ocx2 = int(ox2 * self.scale_factor) + self.x_offset
+                ocy2 = int(oy2 * self.scale_factor) + self.y_offset
+                self.ocr_rect_id = self.canvas.create_rectangle(
+                    ocx1, ocy1, ocx2, ocy2, outline='#FAB387', width=2)
 
     def upload_video(self):
         filetypes = (
@@ -338,6 +369,11 @@ class DetectraApp:
         self.draw_frame()
         self.status_lbl.config(
             text="Click and drag to draw a bounding box around the object to track.")
+        # Show OCR region button now that a video is loaded
+        self.ocr_btn.pack(side=tk.LEFT, padx=(15, 0))
+        self.ocr_region_lbl.config(text="OCR: auto (default)")
+        self.ocr_bbox = None
+        self._drawing_mode = 'object'
 
     def draw_frame(self, frame_rgb=None, bbox=None):
         if frame_rgb is not None:
@@ -352,7 +388,8 @@ class DetectraApp:
             self.last_shown_frame_rgb = self.first_frame_rgb
 
         self.canvas.delete("all")
-        self.rect_id = None
+        self.rect_id     = None
+        self.ocr_rect_id = None
 
         canvas_width  = self.canvas.winfo_width()
         canvas_height = self.canvas.winfo_height()
@@ -392,49 +429,83 @@ class DetectraApp:
             return
         self.rect_start_x = event.x
         self.rect_start_y = event.y
-        if self.rect_id:
-            self.canvas.delete(self.rect_id)
-        self.rect_id = self.canvas.create_rectangle(
-            self.rect_start_x, self.rect_start_y,
-            self.rect_start_x, self.rect_start_y,
-            outline='#00FF00', width=2)
+        if self._drawing_mode == 'object':
+            if self.rect_id:
+                self.canvas.delete(self.rect_id)
+            self.rect_id = self.canvas.create_rectangle(
+                self.rect_start_x, self.rect_start_y,
+                self.rect_start_x, self.rect_start_y,
+                outline='#00FF00', width=2)
+        else:  # 'ocr'
+            if self.ocr_rect_id:
+                self.canvas.delete(self.ocr_rect_id)
+            self.ocr_rect_id = self.canvas.create_rectangle(
+                self.rect_start_x, self.rect_start_y,
+                self.rect_start_x, self.rect_start_y,
+                outline='#FAB387', width=2, dash=(6, 3))
 
     def on_drag(self, event):
-        if self.last_shown_frame_rgb is None or self.rect_id is None:
+        if self.last_shown_frame_rgb is None:
             return
-        self.canvas.coords(self.rect_id,
-                           self.rect_start_x, self.rect_start_y,
-                           event.x, event.y)
+        if self._drawing_mode == 'object':
+            if self.rect_id is None:
+                return
+            self.canvas.coords(self.rect_id,
+                               self.rect_start_x, self.rect_start_y,
+                               event.x, event.y)
+        else:  # 'ocr'
+            if self.ocr_rect_id is None:
+                return
+            self.canvas.coords(self.ocr_rect_id,
+                               self.rect_start_x, self.rect_start_y,
+                               event.x, event.y)
+
+    def _coords_to_image(self, x1, y1, x2, y2):
+        """Convert canvas coords to image-space coords, clamped to frame."""
+        img_w = self.last_shown_frame_rgb.shape[1]
+        img_h = self.last_shown_frame_rgb.shape[0]
+        ix1 = max(0, min((min(x1, x2) - self.x_offset) / self.scale_factor, img_w))
+        iy1 = max(0, min((min(y1, y2) - self.y_offset) / self.scale_factor, img_h))
+        ix2 = max(0, min((max(x1, x2) - self.x_offset) / self.scale_factor, img_w))
+        iy2 = max(0, min((max(y1, y2) - self.y_offset) / self.scale_factor, img_h))
+        return int(ix1), int(iy1), int(ix2), int(iy2)
 
     def on_release(self, event):
-        if self.last_shown_frame_rgb is None or self.rect_id is None:
+        if self.last_shown_frame_rgb is None or self.rect_start_x is None:
             return
+        ix1, iy1, ix2, iy2 = self._coords_to_image(
+            self.rect_start_x, self.rect_start_y, event.x, event.y)
 
-        end_x, end_y = event.x, event.y
-
-        ix1 = (min(self.rect_start_x, end_x) - self.x_offset) / self.scale_factor
-        iy1 = (min(self.rect_start_y, end_y) - self.y_offset) / self.scale_factor
-        ix2 = (max(self.rect_start_x, end_x) - self.x_offset) / self.scale_factor
-        iy2 = (max(self.rect_start_y, end_y) - self.y_offset) / self.scale_factor
-
-        img_width  = self.last_shown_frame_rgb.shape[1]
-        img_height = self.last_shown_frame_rgb.shape[0]
-
-        ix1 = max(0, min(ix1, img_width))
-        iy1 = max(0, min(iy1, img_height))
-        ix2 = max(0, min(ix2, img_width))
-        iy2 = max(0, min(iy2, img_height))
-
-        if ix2 - ix1 > 10 and iy2 - iy1 > 10:
-            self.selected_bbox = (int(ix1), int(iy1), int(ix2), int(iy2))
-            self.start_btn.config(state=tk.NORMAL)
-            self.status_lbl.config(text="Object selected. Click 'Start Tracking'.")
-        else:
-            self.selected_bbox = None
-            self.start_btn.config(state=tk.DISABLED)
-            self.canvas.delete(self.rect_id)
-            self.rect_id = None
-            self.status_lbl.config(text="Box too small, draw again.")
+        if self._drawing_mode == 'object':
+            if self.rect_id is None:
+                return
+            if ix2 - ix1 > 10 and iy2 - iy1 > 10:
+                self.selected_bbox = (ix1, iy1, ix2, iy2)
+                self.start_btn.config(state=tk.NORMAL)
+                self.status_lbl.config(text="Object selected. Click 'Start Tracking'.")
+            else:
+                self.selected_bbox = None
+                self.start_btn.config(state=tk.DISABLED)
+                self.canvas.delete(self.rect_id)
+                self.rect_id = None
+                self.status_lbl.config(text="Box too small, draw again.")
+        else:  # 'ocr'
+            if self.ocr_rect_id is None:
+                return
+            if ix2 - ix1 > 5 and iy2 - iy1 > 5:
+                self.ocr_bbox = (ix1, iy1, ix2, iy2)
+                self.ocr_region_lbl.config(text="OCR region set ✓",
+                                           foreground="#A6E3A1")
+                self.status_lbl.config(
+                    text="OCR region set! Draw the object box or click 'Start Tracking'.")
+            else:
+                self.ocr_bbox = None
+                self.canvas.delete(self.ocr_rect_id)
+                self.ocr_rect_id = None
+                self.ocr_region_lbl.config(text="Too small — try again.",
+                                           foreground="#F38BA8")
+            # Always revert to object-draw mode after OCR selection
+            self._drawing_mode = 'object'
 
     def update_progress(self, current, total):
         pct = (current / total) * 100
@@ -524,11 +595,14 @@ class DetectraApp:
         self.is_paused = False
         self.current_frame_idx = 0
         self.selected_bbox = None
-        self.last_results = None
+        self.ocr_bbox      = None
+        self._drawing_mode = 'object'
+        self.last_results  = None
         self.start_btn.config(text="Start Tracking")
         self.stop_btn.pack_forget()
         self.results_btn.pack_forget()
         self.status_lbl.config(text="Tracking reset.")
+        self.ocr_region_lbl.config(text="OCR: auto (default)")
         self.info_lbl.config(text="")
         if self.first_frame_rgb is not None:
             self.draw_frame(self.first_frame_rgb)
@@ -543,19 +617,21 @@ class DetectraApp:
             # so fast speeds don't build a backlog of stale frames in the queue.
             self._on_new_frame(frame_rgb, bbox)
 
-        def disappearance_cb(frame_before_bgr, frame_after_bgr, frame_idx):
+        def disappearance_cb(frame_before_bgr, frame_after_bgr, frame_idx,
+                             frame_after_with_path=None):
             """Fired immediately when disappearance is detected, before OCR.
-            Opens the results window right away with the before/after frames."""
-            import cv2 as _cv2
+            Opens the results window right away with the before/after frames
+            and the breadcrumb-annotated path frame (if available)."""
             from datetime import timedelta as _td
             fps_val = self.tracker._last_fps if hasattr(self.tracker, '_last_fps') else 25.0
             seconds = int(frame_idx / fps_val)
             early_results = {
-                'disappeared'  : True,
-                'last_frame_idx': frame_idx,
-                'timestamp'    : str(_td(seconds=seconds)),
-                'frame_before' : frame_before_bgr,
-                'frame_after'  : frame_after_bgr,
+                'disappeared'         : True,
+                'last_frame_idx'      : frame_idx,
+                'timestamp'           : str(_td(seconds=seconds)),
+                'frame_before'        : frame_before_bgr,
+                'frame_after'         : frame_after_bgr,
+                'frame_after_with_path': frame_after_with_path,
             }
             self.root.after(0, self._on_disappearance_detected, early_results)
 
@@ -568,7 +644,8 @@ class DetectraApp:
             stop_event=self.stop_event,
             frame_skip=frame_skip,
             start_frame=self.current_frame_idx,
-            disappearance_callback=disappearance_cb
+            disappearance_callback=disappearance_cb,
+            ocr_bbox=self.ocr_bbox
         )
         self.root.after(0, self.on_tracking_complete, results)
 
@@ -680,7 +757,10 @@ class DetectraApp:
         lbl_a_img.grid(row=1, column=1, sticky="nsew", padx=10)
 
         orig_img_b = Image.fromarray(cv2.cvtColor(results['frame_before'], cv2.COLOR_BGR2RGB))
-        orig_img_a = Image.fromarray(cv2.cvtColor(results['frame_after'],  cv2.COLOR_BGR2RGB))
+        # Use the breadcrumb-annotated frame for the 'After' panel when available
+        _path_frame = results.get('frame_after_with_path')
+        _after_src  = _path_frame if _path_frame is not None else results['frame_after']
+        orig_img_a = Image.fromarray(cv2.cvtColor(_after_src, cv2.COLOR_BGR2RGB))
 
         ttk.Button(res_win, text="Export Results...", style="Accent.TButton",
                    command=lambda: self.export_results(results)).pack(pady=10)
@@ -726,6 +806,9 @@ class DetectraApp:
             os.makedirs(export_dir, exist_ok=True)
             cv2.imwrite(str(export_dir / "before_disappearance.jpg"), results['frame_before'])
             cv2.imwrite(str(export_dir / "after_disappearance.jpg"),  results['frame_after'])
+            if 'frame_after_with_path' in results and results['frame_after_with_path'] is not None:
+                cv2.imwrite(str(export_dir / "after_disappearance_path.jpg"),
+                            results['frame_after_with_path'])
             messagebox.showinfo("Export Successful", f"Results exported to:\n{export_dir}")
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export results: {e}")
