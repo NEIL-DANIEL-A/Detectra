@@ -19,6 +19,8 @@ class Tracker:
         model_path = str(MODELS_DIR / "yolov8n.pt")
         self.model = YOLO(model_path)
         self.reader = None  # Loaded on demand or in splash screen to save memory
+        # CLAHE instance (created once, reused every frame to avoid overhead)
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
     def init_ocr(self):
         """Initialize EasyOCR reader. Takes ~1-2 seconds."""
@@ -33,6 +35,17 @@ class Tracker:
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _apply_clahe(self, frame_bgr):
+        """Enhance local contrast via CLAHE on the L channel (LAB space).
+
+        Operates only on luminance so colours remain natural.
+        Returns a new BGR frame — the input is not modified.
+        """
+        lab        = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b    = cv2.split(lab)
+        l_enhanced = self._clahe.apply(l)
+        return cv2.cvtColor(cv2.merge([l_enhanced, a, b]), cv2.COLOR_LAB2BGR)
 
     def extract_first_frame(self, video_path):
         """Returns the first frame as RGB, or (None, error_str)."""
@@ -230,6 +243,7 @@ class Tracker:
 
         first_frame_bgr = frame.copy()
         pf0             = cv2.resize(frame, (proc_w, proc_h))
+        pf0             = self._apply_clahe(pf0)   # ← CLAHE: improve contrast for YOLO lock-on
         res0            = self.model.track(pf0, persist=True, verbose=False)
 
         target_track_id = None
@@ -312,6 +326,7 @@ class Tracker:
 
             current_bgr = frame.copy()
             pf          = cv2.resize(frame, (proc_w, proc_h))
+            pf          = self._apply_clahe(pf)    # ← CLAHE: enhance each sampled frame
             run_yolo    = True   # every sampled frame runs YOLO
 
             # ── CSRT: update on this sampled frame ───────────────────────
@@ -487,7 +502,8 @@ class Tracker:
                     crop = current_bgr[oy1:oy2, ox1:ox2]
                 else:
                     crop = current_bgr[0:int(h * 0.2), int(w * 0.5):w]
-                
+
+                crop    = self._apply_clahe(crop)  # ← CLAHE: sharpen timestamp contrast for OCR
                 ocr_txt = " ".join(self.reader.readtext(crop, detail=0)).strip()
                 if ocr_txt:
                     res_dict['timestamp_ocr'] = ocr_txt
