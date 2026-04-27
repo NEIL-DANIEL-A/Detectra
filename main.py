@@ -101,7 +101,8 @@ class SplashScreen:
             self._update(70, "Initializing OCR...")
             self.tracker.init_ocr()
         except Exception as e:
-            self.root.after(0, lambda: self.status_var.set(f"Error: {e}"))
+            err = str(e)
+            self.root.after(0, lambda msg=err: self.status_var.set(f"Error: {msg}"))
             return
 
         self._update(90, "Preparing interface...")
