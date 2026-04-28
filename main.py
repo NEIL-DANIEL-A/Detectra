@@ -78,7 +78,7 @@ class SplashScreen:
                  font=("Segoe UI", 10),
                  bg="#1E1E2E", fg="#6C7086").pack()
 
-        tk.Label(self.root, text="v2.0.0",
+        tk.Label(self.root, text="v3.0.0",
                  font=("Segoe UI", 8),
                  bg="#1E1E2E", fg="#45475A").place(relx=1.0, rely=1.0,
                                                     anchor="se", x=-10, y=-10)
@@ -145,6 +145,12 @@ class DetectraApp:
         self.detections = []
         self.selected_bbox = None
         self.tracker = tracker
+
+        # Multi-file queue
+        self.video_queue   = []   # list of file paths yet to be processed
+        self.queue_index   = 0    # which file in the full batch we're on
+        self.queue_total   = 0    # total files in current batch
+        self._auto_advance = False  # True while auto-advancing to next file
 
         # Display state
         self.canvas_image = None
@@ -350,12 +356,23 @@ class DetectraApp:
             ('Video files', '*.mp4 *.avi *.mkv *.mov'),
             ('All files', '*.*')
         )
-        filepath = filedialog.askopenfilename(title='Open a video', filetypes=filetypes)
-        if not filepath:
+        filepaths = filedialog.askopenfilenames(title='Open video(s)', filetypes=filetypes)
+        if not filepaths:
             return
 
+        # Build queue — first file loads immediately, rest queued
+        self.video_queue = list(filepaths)
+        self.queue_index = 0
+        self.queue_total = len(self.video_queue)
+        self._load_video_from_queue(self.video_queue[0])
+
+    def _load_video_from_queue(self, filepath):
+        """Load a single video file from the queue and prepare the canvas."""
         self.video_path = filepath
-        self.status_lbl.config(text=f"Loading: {os.path.basename(filepath)}...")
+        queue_info = (f" [{self.queue_index + 1}/{self.queue_total}]"
+                      if self.queue_total > 1 else "")
+        self.status_lbl.config(
+            text=f"Loading{queue_info}: {os.path.basename(filepath)}...")
         self.root.update()
 
         frame, err = self.tracker.extract_first_frame(self.video_path)
@@ -364,19 +381,57 @@ class DetectraApp:
             self.status_lbl.config(text="Error loading video.")
             return
 
-        self.first_frame_rgb = frame
-        self.last_shown_frame_rgb = frame
+        self.first_frame_rgb       = frame
+        self.last_shown_frame_rgb  = frame
+
+        # Reset per-video tracking state
+        self.selected_bbox         = None
+        self.ocr_bbox              = None
+        self._drawing_mode         = 'object'
+        self.is_paused             = False
+        self.current_frame_idx     = 0
+        self.last_results          = None
+        self.stop_btn.pack_forget()
+        self.results_btn.pack_forget()
+        self.start_btn.config(text="Start Tracking", state=tk.DISABLED)
+        if self.rect_id:
+            self.canvas.delete(self.rect_id)
+            self.rect_id = None
+        if self.ocr_rect_id:
+            self.canvas.delete(self.ocr_rect_id)
+            self.ocr_rect_id = None
+        self.progress_var.set(0)
+        self.info_lbl.config(text="")
+
         self.status_lbl.config(text="Detecting objects...")
         self.root.update()
-
         self.draw_frame()
+
+        queue_info = (f" [{self.queue_index + 1}/{self.queue_total}]"
+                      if self.queue_total > 1 else "")
         self.status_lbl.config(
-            text="Click and drag to draw a bounding box around the object to track.")
+            text=f"Video{queue_info} loaded. Draw a bounding box around the object to track.")
+
         # Show OCR region button now that a video is loaded
         self.ocr_btn.pack(side=tk.LEFT, padx=(15, 0))
         self.ocr_region_lbl.config(text="OCR: auto (default)")
-        self.ocr_bbox = None
-        self._drawing_mode = 'object'
+        self._update_queue_label()
+
+    def _update_queue_label(self):
+        """Show/hide a small queue status badge next to the upload button."""
+        if not hasattr(self, '_queue_lbl'):
+            self._queue_lbl = ttk.Label(
+                self.control_frame, text="",
+                font=('Segoe UI', 10), foreground="#FAB387")
+            self._queue_lbl.pack(side=tk.LEFT, padx=(0, 8))
+        if self.queue_total > 1:
+            remaining = self.queue_total - self.queue_index - 1
+            if remaining > 0:
+                self._queue_lbl.config(text=f"\U0001f4c2 {remaining} more video(s) queued")
+            else:
+                self._queue_lbl.config(text="")
+        else:
+            self._queue_lbl.config(text="")
 
     def draw_frame(self, frame_rgb=None, bbox=None):
         if frame_rgb is not None:
@@ -723,9 +778,68 @@ class DetectraApp:
         else:
             self.is_paused = False
             self.current_frame_idx = 0
-            self.status_lbl.config(text="Tracking finished. Object never disappeared.")
-            self.info_lbl.config(
+
+            # ── Auto-advance to next queued video if available ──
+            next_idx = self.queue_index + 1
+            if next_idx < self.queue_total:
+                self.queue_index = next_idx
+                next_file = self.video_queue[next_idx]
+                self.status_lbl.config(
+                    text=f"Video {self.queue_index}/{self.queue_total} done. "
+                         f"Loading next: {os.path.basename(next_file)}...")
+                self.info_lbl.config(text="")
+                self.root.after(800, lambda f=next_file: self._advance_to_next(f))
+            else:
+                self.status_lbl.config(text="Tracking finished. Object never disappeared.")
+                self.info_lbl.config(
                     text="Object remained in frame for the full video.", foreground="green")
+                if self.queue_total > 1:
+                    self.info_lbl.config(
+                        text=f"All {self.queue_total} videos processed. "
+                             "Object never disappeared in any file.", foreground="green")
+
+    def _advance_to_next(self, filepath):
+        """Called after a short delay to load the next queued video and
+        auto-start tracking with the same bbox and settings as before."""
+        prev_bbox   = self.selected_bbox  # remember user's drawn box
+        prev_ocr    = self.ocr_bbox
+        prev_speed  = int(self.speed_var.get())
+        prev_show   = self.show_tracking_var.get()
+
+        self._load_video_from_queue(filepath)
+
+        # Re-apply bbox from previous video so user doesn't have to redraw
+        if prev_bbox:
+            self.selected_bbox = prev_bbox
+            self.ocr_bbox      = prev_ocr
+            # Draw the box visually on the new first frame
+            x1, y1, x2, y2 = prev_bbox
+            cx1 = int(x1 * self.scale_factor) + self.x_offset
+            cy1 = int(y1 * self.scale_factor) + self.y_offset
+            cx2 = int(x2 * self.scale_factor) + self.x_offset
+            cy2 = int(y2 * self.scale_factor) + self.y_offset
+            if self.rect_id:
+                self.canvas.delete(self.rect_id)
+            self.rect_id = self.canvas.create_rectangle(
+                cx1, cy1, cx2, cy2, outline='#00FF00', width=2)
+            if prev_ocr:
+                ox1, oy1, ox2, oy2 = prev_ocr
+                ocx1 = int(ox1 * self.scale_factor) + self.x_offset
+                ocy1 = int(oy1 * self.scale_factor) + self.y_offset
+                ocx2 = int(ox2 * self.scale_factor) + self.x_offset
+                ocy2 = int(oy2 * self.scale_factor) + self.y_offset
+                if self.ocr_rect_id:
+                    self.canvas.delete(self.ocr_rect_id)
+                self.ocr_rect_id = self.canvas.create_rectangle(
+                    ocx1, ocy1, ocx2, ocy2, outline='#FAB387', width=2, dash=(6, 3))
+                self.ocr_region_lbl.config(text="OCR region set ✓", foreground="#A6E3A1")
+
+            self.start_btn.config(state=tk.NORMAL)
+            queue_info = f" [{self.queue_index + 1}/{self.queue_total}]"
+            self.status_lbl.config(
+                text=f"Video{queue_info} ready. Auto-starting tracking...")
+            # Auto-start tracking after a brief pause so canvas renders
+            self.root.after(600, self.start_tracking)
 
     def show_results_window(self, results):
         res_win = tk.Toplevel(self.root)
