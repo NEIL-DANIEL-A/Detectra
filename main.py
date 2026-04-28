@@ -657,9 +657,9 @@ class DetectraApp:
             self.show_results_window(self.last_results)
 
     def _on_disappearance_detected(self, early_results):
-        """Called immediately when disappearance is first detected.
-        Shows the alert and opens the results window without waiting for OCR."""
         self.last_results = early_results
+        # ── Store disappearance frame so Resume starts from here ──
+        self._disappearance_frame_idx = early_results.get('last_frame_idx', 0)
         self.results_btn.pack(side=tk.RIGHT)
         self.status_lbl.config(text="⚠️  Disappearance detected!")
         timestamp_text = early_results.get('timestamp_ocr', early_results['timestamp'])
@@ -667,12 +667,9 @@ class DetectraApp:
             text=f"Object disappeared at: {timestamp_text}\n"
                  f"OCR timestamp extraction in progress...",
             foreground="red")
-        
-        # Only open if not already open (prevent double window at high speeds)
         if self._results_win is None or not self._results_win.winfo_exists():
             self._results_win = self.show_results_window(early_results)
         else:
-            # If already open, just update its current timestamp
             if hasattr(self._results_win, '_timestamp_var'):
                 self._results_win._timestamp_var.set(f"Time of Disappearance:\n{timestamp_text}")
 
@@ -694,7 +691,6 @@ class DetectraApp:
             return
 
         self.is_paused = False
-        self.current_frame_idx = 0
         self.start_btn.config(text="Start Tracking")
         self.stop_btn.pack_forget()
         self.progress_var.set(100)
@@ -705,18 +701,19 @@ class DetectraApp:
             return
 
         if results.get("disappeared"):
-            # Update last_results with the final data (may now include OCR timestamp)
             self.last_results = results
             self.results_btn.pack(side=tk.RIGHT)
-            self.status_lbl.config(text="⚠️  Disappearance detected!")
+
+            # ── Resume will start from the disappearance frame ──
+            self.current_frame_idx = results.get('last_frame_idx', 0)
+            self.is_paused = True
+            self.start_btn.config(text="Resume from Disappearance")
+
             timestamp_text = results.get('timestamp_ocr', results['timestamp'])
             self.info_lbl.config(
                 text=f"Object disappeared at: {timestamp_text}\n"
-                     f"Click 'Show Last Results' to export snapshots.",
+                    f"Re-draw the box and click 'Resume from Disappearance' to continue.",
                 foreground="red")
-            # If the results window is already open (opened by _on_disappearance_detected),
-            # just refresh its timestamp label with the final OCR value.
-            # If it was closed by the user, open a new one.
             win = self._results_win
             if win is not None and win.winfo_exists():
                 if hasattr(win, '_timestamp_var'):
@@ -724,9 +721,11 @@ class DetectraApp:
             else:
                 self._results_win = self.show_results_window(results)
         else:
+            self.is_paused = False
+            self.current_frame_idx = 0
             self.status_lbl.config(text="Tracking finished. Object never disappeared.")
             self.info_lbl.config(
-                text="Object remained in frame for the full video.", foreground="green")
+                    text="Object remained in frame for the full video.", foreground="green")
 
     def show_results_window(self, results):
         res_win = tk.Toplevel(self.root)
